@@ -1,19 +1,36 @@
+import { assessGrid } from "./cell-quality";
 import { joinTokens, looksNumericToken, shouldGlueTokens } from "./numbers";
+
+export type BBox = { x0: number; y0: number; x1: number; y1: number };
 
 export type OcrWord = {
   text: string;
   confidence: number;
-  bbox: { x0: number; y0: number; x1: number; y1: number };
+  bbox: BBox;
+};
+
+export type CellMeta = {
+  confidence: number;
+  bbox: BBox | null;
+  shaky: boolean;
+  reasons: string[];
 };
 
 export type GridResult = {
   cells: string[][];
+  meta: CellMeta[][];
   fillRatio: number;
   medianConfidence: number;
   sparse: boolean;
   empty: boolean;
   singleCell: boolean;
   warning: string | null;
+};
+
+type AccCell = {
+  text: string;
+  confidence: number;
+  bbox: BBox | null;
 };
 
 function median(values: number[]): number {
@@ -50,6 +67,16 @@ function isRuleToken(w: OcrWord): boolean {
   if (/^[|Iil!]+$/.test(t) && width(w) < height(w) * 0.5) return true;
   if (/^[-_=─—]+$/.test(t) && width(w) > height(w) * 3) return true;
   return false;
+}
+
+function unionBBox(a: BBox | null, b: BBox): BBox {
+  if (!a) return { ...b };
+  return {
+    x0: Math.min(a.x0, b.x0),
+    y0: Math.min(a.y0, b.y0),
+    x1: Math.max(a.x1, b.x1),
+    y1: Math.max(a.y1, b.y1),
+  };
 }
 
 function clusterRows(words: OcrWord[], rowThreshold: number): OcrWord[][] {
@@ -137,7 +164,11 @@ function columnAnchors(rows: OcrWord[][], em: number): number[] {
   return groups.map((g) => mean(g));
 }
 
-function assignColumns(rows: OcrWord[][], anchors: number[]): string[][] {
+function emptyAcc(): AccCell {
+  return { text: "", confidence: 100, bbox: null };
+}
+
+function assignColumns(rows: OcrWord[][], anchors: number[]): AccCell[][] {
   const nCols = Math.max(1, anchors.length);
   const bounds: number[] = [];
   for (let i = 0; i < nCols; i++) {
@@ -145,7 +176,7 @@ function assignColumns(rows: OcrWord[][], anchors: number[]): string[][] {
     bounds.push(left);
   }
 
-  const grid: string[][] = rows.map(() => Array.from({ length: nCols }, () => ""));
+  const grid: AccCell[][] = rows.map(() => Array.from({ length: nCols }, () => emptyAcc()));
 
   rows.forEach((row, r) => {
     for (const word of row) {
@@ -154,22 +185,25 @@ function assignColumns(rows: OcrWord[][], anchors: number[]): string[][] {
       for (let i = 0; i < nCols; i++) {
         if (x >= bounds[i]!) col = i;
       }
-      const existing = grid[r]![col]!;
-      grid[r]![col] = existing
+      const cell = grid[r]![col]!;
+      const existing = cell.text;
+      cell.text = existing
         ? joinTokens(existing, word.text, shouldGlueTokens(existing, word.text, 4, 12))
         : word.text;
+      cell.confidence = existing ? Math.min(cell.confidence, word.confidence) : word.confidence;
+      cell.bbox = unionBBox(cell.bbox, word.bbox);
     }
   });
 
   return grid;
 }
 
-function dropEmptyEdges(grid: string[][]): string[][] {
+function dropEmptyEdges(grid: AccCell[][]): AccCell[][] {
   if (grid.length === 0) return grid;
   const nCols = grid[0]!.length;
 
-  const colUsed = Array.from({ length: nCols }, (_, c) => grid.some((row) => row[c]?.trim()));
-  const rowUsed = grid.map((row) => row.some((cell) => cell.trim()));
+  const colUsed = Array.from({ length: nCols }, (_, c) => grid.some((row) => row[c]?.text.trim()));
+  const rowUsed = grid.map((row) => row.some((cell) => cell.text.trim()));
 
   const keepCols = colUsed.map((u, i) => (u ? i : -1)).filter((i) => i >= 0);
   if (keepCols.length === 0 || !rowUsed.some(Boolean)) return [];
@@ -177,17 +211,26 @@ function dropEmptyEdges(grid: string[][]): string[][] {
   return grid.filter((_, r) => rowUsed[r]).map((row) => keepCols.map((c) => row[c]!));
 }
 
+function accToMeta(grid: AccCell[][]): { cells: string[][]; meta: CellMeta[][] } {
+  const cells = grid.map((row) => row.map((cell) => cell.text));
+  const confidences = grid.map((row) => row.map((cell) => cell.confidence));
+  const bboxes = grid.map((row) => row.map((cell) => cell.bbox));
+  return { cells, meta: assessGrid(cells, confidences, bboxes) };
+}
+
 export function reconstructGrid(words: OcrWord[]): GridResult {
   const cleaned = words
     .map((w) => ({
       ...w,
       text: w.text.replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim(),
+      confidence: Number.isFinite(w.confidence) ? w.confidence : 0,
     }))
     .filter((w) => w.text.length > 0 && w.confidence >= 20 && !isRuleToken(w));
 
   if (cleaned.length === 0) {
     return {
       cells: [],
+      meta: [],
       fillRatio: 0,
       medianConfidence: 0,
       sparse: false,
@@ -203,7 +246,19 @@ export function reconstructGrid(words: OcrWord[]): GridResult {
   const rows = clusterRows(cleaned, rowThreshold).map((row) => mergeRowWords(row, em, charW));
   const anchors = columnAnchors(rows, em);
   const raw = assignColumns(rows, anchors);
-  const cells = dropEmptyEdges(raw);
+  const acc = dropEmptyEdges(raw);
+  const { cells, meta } =
+    acc.length === 0
+      ? accToMeta([
+          [
+            {
+              text: cleaned.map((w) => w.text).join(" "),
+              confidence: median(cleaned.map((w) => w.confidence)),
+              bbox: cleaned.reduce<BBox | null>((box, w) => unionBBox(box, w.bbox), null),
+            },
+          ],
+        ])
+      : accToMeta(acc);
 
   const total = cells.reduce((n, row) => n + row.length, 0);
   const filled = cells.reduce(
@@ -215,6 +270,7 @@ export function reconstructGrid(words: OcrWord[]): GridResult {
   const empty = filled === 0;
   const singleCell = cells.length === 1 && (cells[0]?.length ?? 0) === 1;
   const sparse = !empty && total >= 6 && fillRatio < 0.45;
+  const shakyCount = meta.flat().filter((cell) => cell.shaky).length;
 
   let warning: string | null = null;
   if (empty) warning = "Couldn't find a table in this image.";
@@ -224,10 +280,13 @@ export function reconstructGrid(words: OcrWord[]): GridResult {
     warning = "This grid looks sparse — some cells may be missing. Fix anything that's off before you export.";
   } else if (medianConfidence < 62) {
     warning = "OCR wasn't sure about some cells. A closer, flatter crop usually helps.";
+  } else if (shakyCount > 0) {
+    warning = `${shakyCount} cell${shakyCount === 1 ? "" : "s"} look uncertain. Click a highlighted cell to compare it with the image.`;
   }
 
   return {
     cells: cells.length ? cells : [[cleaned.map((w) => w.text).join(" ")]],
+    meta: meta.length ? meta : assessGrid([[cleaned.map((w) => w.text).join(" ")]], [[medianConfidence]], [[null]]),
     fillRatio,
     medianConfidence,
     sparse,
@@ -239,6 +298,14 @@ export function reconstructGrid(words: OcrWord[]): GridResult {
 
 export function emptyGrid(rows = 4, cols = 4): string[][] {
   return Array.from({ length: rows }, () => Array.from({ length: cols }, () => ""));
+}
+
+export function emptyCellMeta(): CellMeta {
+  return { confidence: 100, bbox: null, shaky: false, reasons: [] };
+}
+
+export function metaGridFor(cells: string[][]): CellMeta[][] {
+  return cells.map((row) => row.map(() => emptyCellMeta()));
 }
 
 export function addRow(grid: string[][], at?: number): string[][] {
@@ -272,4 +339,40 @@ export function deleteColumn(grid: string[][], index: number): string[][] {
 
 export function setCell(grid: string[][], r: number, c: number, value: string): string[][] {
   return grid.map((row, i) => (i === r ? row.map((cell, j) => (j === c ? value : cell)) : [...row]));
+}
+
+export function addRowMeta(meta: CellMeta[][], at?: number): CellMeta[][] {
+  const cols = meta[0]?.length ?? 1;
+  const row = Array.from({ length: cols }, () => emptyCellMeta());
+  const next = meta.map((r) => [...r]);
+  next.splice(at ?? next.length, 0, row);
+  return next;
+}
+
+export function addColumnMeta(meta: CellMeta[][], at?: number): CellMeta[][] {
+  const index = at ?? (meta[0]?.length ?? 0);
+  return meta.map((row) => {
+    const next = [...row];
+    next.splice(index, 0, emptyCellMeta());
+    return next;
+  });
+}
+
+export function deleteRowMeta(meta: CellMeta[][], index: number): CellMeta[][] {
+  if (meta.length <= 1) return meta.map((row) => [...row]);
+  return meta.filter((_, i) => i !== index).map((row) => [...row]);
+}
+
+export function deleteColumnMeta(meta: CellMeta[][], index: number): CellMeta[][] {
+  const cols = meta[0]?.length ?? 0;
+  if (cols <= 1) return meta.map((row) => [...row]);
+  return meta.map((row) => row.filter((_, i) => i !== index));
+}
+
+export function markCellReviewed(meta: CellMeta[][], r: number, c: number): CellMeta[][] {
+  return meta.map((row, i) =>
+    i === r
+      ? row.map((cell, j) => (j === c ? { ...cell, shaky: false, reasons: [] } : cell))
+      : [...row],
+  );
 }

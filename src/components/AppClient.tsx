@@ -2,17 +2,20 @@
 
 import { useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { SAMPLES, type SampleId } from "@/lib/constants";
-import { recordExport, remainingFreeExports } from "@/lib/entitlement";
-import { copyTsv, downloadCsv, downloadXlsx } from "@/lib/export";
-import { extractGridFromImage, type OcrProgress } from "@/lib/ocr";
-import { useEntitlementState } from "@/lib/use-entitlement";
-import { takePendingImage } from "@/lib/pending-image";
+import { Cropper } from "./Cropper";
 import { Dropzone } from "./Dropzone";
 import { Paywall } from "./Paywall";
 import { Spreadsheet } from "./Spreadsheet";
+import { SAMPLES, type SampleId } from "@/lib/constants";
+import { cropImageBlob, loadRememberedCrop, saveRememberedCrop, type CropRect } from "@/lib/crop";
+import { recordExport, remainingFreeExports } from "@/lib/entitlement";
+import { copyTsv, downloadCsv, downloadXlsx } from "@/lib/export";
+import { type CellMeta, metaGridFor } from "@/lib/grid";
+import { extractGridFromImage, type OcrProgress } from "@/lib/ocr";
+import { takePendingImage } from "@/lib/pending-image";
+import { useEntitlementState } from "@/lib/use-entitlement";
 
-type Status = "idle" | "processing" | "ready" | "error";
+type Status = "idle" | "cropping" | "processing" | "ready" | "error";
 
 function isSampleId(value: string | null): value is SampleId {
   return value === "price" || value === "marks";
@@ -32,7 +35,10 @@ export function AppClient() {
   const [status, setStatus] = useState<Status>("idle");
   const [progress, setProgress] = useState<OcrProgress>({ phase: "", progress: 0 });
   const [cells, setCells] = useState<string[][]>([]);
+  const [meta, setMeta] = useState<CellMeta[][]>([]);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [sourceUrl, setSourceUrl] = useState<string | null>(null);
+  const [rememberedCrop, setRememberedCrop] = useState<CropRect | null>(null);
   const [warning, setWarning] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [paywall, setPaywall] = useState(false);
@@ -41,12 +47,30 @@ export function AppClient() {
   const locked = !entitled;
   const busy = useRef(false);
   const bootstrapped = useRef(false);
+  const originalBlob = useRef<Blob | null>(null);
 
   const requireAccess = useCallback(() => {
     if (entitled) return true;
     setPaywall(true);
     return false;
   }, [entitled]);
+
+  const beginCrop = useCallback(
+    (source: Blob) => {
+      if (!requireAccess()) return;
+      originalBlob.current = source;
+      setSourceUrl(URL.createObjectURL(source));
+      setPreviewUrl(null);
+      setCells([]);
+      setMeta([]);
+      setError(null);
+      setWarning(null);
+      setCopied(false);
+      setRememberedCrop(loadRememberedCrop());
+      setStatus("cropping");
+    },
+    [requireAccess],
+  );
 
   const run = useCallback(
     async (source: Blob) => {
@@ -63,11 +87,13 @@ export function AppClient() {
         setPreviewUrl(result.previewUrl);
         if (result.empty || result.cells.length === 0) {
           setCells([]);
+          setMeta([]);
           setError(result.warning || "Couldn't find a table in this image.");
           setStatus("error");
           return;
         }
         setCells(result.cells);
+        setMeta(result.meta.length ? result.meta : metaGridFor(result.cells));
         setWarning(result.warning);
         setStatus("ready");
       } catch (err) {
@@ -85,6 +111,29 @@ export function AppClient() {
     [requireAccess],
   );
 
+  const confirmCrop = useCallback(
+    async (crop: CropRect) => {
+      const source = originalBlob.current;
+      if (!source) return;
+      saveRememberedCrop(crop);
+      setRememberedCrop(crop);
+      try {
+        const cropped = await cropImageBlob(source, crop);
+        await run(cropped);
+      } catch {
+        setError("Couldn't crop that image. Try skip, or pick another file.");
+        setStatus("error");
+      }
+    },
+    [run],
+  );
+
+  const skipCrop = useCallback(() => {
+    const source = originalBlob.current;
+    if (!source) return;
+    void run(source);
+  }, [run]);
+
   const loadSample = useCallback(
     async (id: SampleId) => {
       if (!requireAccess()) return;
@@ -94,9 +143,9 @@ export function AppClient() {
         setStatus("error");
         return;
       }
-      await run(await res.blob());
+      beginCrop(await res.blob());
     },
-    [requireAccess, run],
+    [beginCrop, requireAccess],
   );
 
   useEffect(() => {
@@ -104,9 +153,8 @@ export function AppClient() {
     bootstrapped.current = true;
     const pending = takePendingImage();
     if (pending) {
-      // Bootstrap from a landing-page drop or a shared ?sample= link.
       queueMicrotask(() => {
-        void run(pending);
+        beginCrop(pending);
       });
       return;
     }
@@ -116,7 +164,7 @@ export function AppClient() {
         void loadSample(sample);
       });
     }
-  }, [loadSample, run, searchParams]);
+  }, [beginCrop, loadSample, searchParams]);
 
   useEffect(() => {
     const onPaste = (e: ClipboardEvent) => {
@@ -125,11 +173,11 @@ export function AppClient() {
       const file = fileFromClipboard(e);
       if (!file) return;
       e.preventDefault();
-      void run(file);
+      beginCrop(file);
     };
     window.addEventListener("paste", onPaste);
     return () => window.removeEventListener("paste", onPaste);
-  }, [run]);
+  }, [beginCrop]);
 
   const afterExport = useCallback(() => {
     recordExport(accountPaid);
@@ -190,7 +238,7 @@ export function AppClient() {
       {status === "idle" && (
         <div className="grid gap-6 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,0.8fr)]">
           <div onClick={locked ? () => setPaywall(true) : undefined}>
-            <Dropzone disabled={locked} onFile={(file) => void run(file)} />
+            <Dropzone disabled={locked} onFile={(file) => beginCrop(file)} />
           </div>
           <div>
             <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-muted">
@@ -219,6 +267,16 @@ export function AppClient() {
             </div>
           </div>
         </div>
+      )}
+
+      {status === "cropping" && sourceUrl && (
+        <Cropper
+          key={sourceUrl}
+          src={sourceUrl}
+          initialCrop={rememberedCrop}
+          onConfirm={(crop) => void confirmCrop(crop)}
+          onSkip={skipCrop}
+        />
       )}
 
       {status === "processing" && (
@@ -258,8 +316,21 @@ export function AppClient() {
               <img src={previewUrl} alt="Source" className="w-full rounded-xl border border-line bg-surface" />
             )}
             <div onClick={locked ? () => setPaywall(true) : undefined}>
-              <Dropzone compact disabled={locked} onFile={(file) => void run(file)} />
+              <Dropzone compact disabled={locked} onFile={(file) => beginCrop(file)} />
             </div>
+            {sourceUrl && (
+              <button
+                type="button"
+                className="text-left text-sm text-muted hover:text-ink"
+                onClick={() => {
+                  if (!requireAccess()) return;
+                  const blob = originalBlob.current;
+                  if (blob) beginCrop(blob);
+                }}
+              >
+                Crop again →
+              </button>
+            )}
             <div className="flex flex-col gap-2">
               {Object.values(SAMPLES).map((sample) => (
                 <button
@@ -285,7 +356,16 @@ export function AppClient() {
               </div>
             )}
             {status === "ready" && (
-              <Spreadsheet cells={cells} onChange={setCells} locked={locked} />
+              <Spreadsheet
+                cells={cells}
+                meta={meta}
+                previewUrl={previewUrl}
+                onChange={(nextCells, nextMeta) => {
+                  setCells(nextCells);
+                  setMeta(nextMeta);
+                }}
+                locked={locked}
+              />
             )}
             {status === "error" && (
               <p className="text-sm text-muted">
