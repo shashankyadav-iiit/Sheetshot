@@ -15,6 +15,11 @@ export function useEntitlementState() {
   const [polarPaid, setPolarPaid] = useState(false);
   const [googleAuth, setGoogleAuth] = useState(false);
   const [localTick, setLocalTick] = useState(0);
+  const [hydrated, setHydrated] = useState(false);
+
+  useEffect(() => {
+    setHydrated(true);
+  }, []);
 
   useEffect(() => {
     const bump = () => setLocalTick((n) => n + 1);
@@ -46,13 +51,14 @@ export function useEntitlementState() {
   }, [session?.user?.email, session?.paid, localTick]);
 
   const accountPaid = polarPaid || session?.paid === true;
-  const unlocked = accountPaid || isDevUnlocked();
-  const remaining = remainingFreeExports(accountPaid);
+  const unlocked = accountPaid || (hydrated && isDevUnlocked());
+  const remaining = hydrated ? remainingFreeExports(accountPaid) : FREE_EXPORTS;
+  const entitled = accountPaid || !hydrated || canExport(accountPaid);
 
   return {
     unlocked,
     remaining: Number.isFinite(remaining) ? remaining : FREE_EXPORTS,
-    canExport: canExport(accountPaid),
+    canExport: entitled,
     accountPaid,
     signedIn: Boolean(session?.user?.email),
     user: session?.user ?? null,
