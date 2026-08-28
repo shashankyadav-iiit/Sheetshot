@@ -192,18 +192,19 @@ export function Spreadsheet({
         <table className="min-w-full border-collapse font-mono text-[13px]">
           <thead>
             <tr>
-              <th className="sticky left-0 z-10 w-14 bg-paper-2 text-[11px] font-medium text-faint" />
+              <th className="sticky left-0 z-10 w-[4.5rem] bg-paper-2 text-[11px] font-medium text-faint" />
               {Array.from({ length: cols }, (_, c) => (
                 <th
                   key={c}
                   className="min-w-[7.5rem] border-l border-line bg-paper-2 px-1 py-1 text-center text-[11px] font-medium text-muted"
                 >
-                  <div className="flex items-center justify-center gap-0.5">
+                  <div className="flex items-center justify-center gap-1">
                     <span>{colLabel(c)}</span>
                     {!locked && (
                       <>
                         <button
                           type="button"
+                          aria-label={`Insert column after ${colLabel(c)}`}
                           title="Insert column after"
                           className="rounded px-1 text-faint hover:bg-paper hover:text-ink"
                           onClick={() =>
@@ -214,6 +215,7 @@ export function Spreadsheet({
                         </button>
                         <button
                           type="button"
+                          aria-label={`Delete column ${colLabel(c)}`}
                           title="Delete column"
                           className="rounded px-1 text-faint hover:bg-accent-soft hover:text-accent"
                           onClick={() => onChange(deleteColumn(cells, c), deleteColumnMeta(meta, c))}
@@ -231,12 +233,13 @@ export function Spreadsheet({
             {cells.map((row, r) => (
               <tr key={r} className="odd:bg-surface even:bg-[#fbf7f0]">
                 <th className="sticky left-0 z-10 border-t border-line bg-paper-2 px-1 py-0 text-center text-[11px] font-medium text-muted">
-                  <div className="flex items-center justify-center gap-0.5">
+                  <div className="flex items-center justify-center gap-1">
                     <span>{r + 1}</span>
                     {!locked && (
                       <>
                         <button
                           type="button"
+                          aria-label={`Insert row below ${r + 1}`}
                           title="Insert row below"
                           className="rounded px-1 text-faint hover:bg-paper hover:text-ink"
                           onClick={() => onChange(addRow(cells, r + 1), addRowMeta(meta, r + 1))}
@@ -245,6 +248,7 @@ export function Spreadsheet({
                         </button>
                         <button
                           type="button"
+                          aria-label={`Delete row ${r + 1}`}
                           title="Delete row"
                           className="rounded px-1 text-faint hover:bg-accent-soft hover:text-accent"
                           onClick={() => onChange(deleteRow(cells, r), deleteRowMeta(meta, r))}
