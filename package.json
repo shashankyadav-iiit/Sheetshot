@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "tsx --test src/lib/grid.test.ts src/lib/polar.test.ts",
+    "test": "tsx --test src/lib/grid.test.ts src/lib/polar.test.ts src/lib/crop.test.ts src/lib/cell-quality.test.ts",
     "generate-samples": "python3 scripts/generate-samples.py",
     "generate-og": "python3 scripts/generate-og.py"
   },

@@ -3,7 +3,9 @@ import { test } from "node:test";
 import { gridToCsv, gridToTsv } from "./csv";
 import {
   addColumn,
+  addColumnMeta,
   addRow,
+  addRowMeta,
   deleteColumn,
   reconstructGrid,
   type OcrWord,
@@ -75,6 +77,28 @@ test("add and delete columns keep a usable grid", () => {
   assert.equal(taller.length, 3);
   const slim = deleteColumn(taller, 2);
   assert.equal(slim[0]?.length, 2);
+
+  const meta = addColumnMeta(addRowMeta([[{ confidence: 90, bbox: null, shaky: false, reasons: [] }]]));
+  assert.equal(meta.length, 2);
+  assert.equal(meta[0]?.length, 2);
+});
+
+test("carries per-cell confidence and flags a 0/O mix-up", () => {
+  const words: OcrWord[] = [
+    word("Item", 10, 10, 80, 32, 92),
+    word("Amt", 200, 10, 250, 32, 91),
+    word("Rice", 10, 50, 70, 72, 90),
+    word("15O0", 210, 50, 250, 72, 88),
+    word("Salt", 10, 90, 70, 112, 90),
+    word("1400", 210, 90, 250, 112, 93),
+  ];
+  const result = reconstructGrid(words);
+  assert.equal(result.cells[1]?.[1], "15O0");
+  assert.equal(result.meta.length, result.cells.length);
+  assert.equal(result.meta[1]?.[1]?.shaky, true);
+  assert.ok(result.meta[1]?.[1]?.bbox);
+  assert.equal(result.meta[2]?.[1]?.shaky, false);
+  assert.ok(result.warning);
 });
 
 test("keeps multi-word item names in one cell when columns are far apart", () => {

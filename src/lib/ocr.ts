@@ -15,7 +15,7 @@ export type ExtractResult = GridResult & {
 type WordLike = {
   text: string;
   confidence: number;
-  bbox: { x0: number; y0: number; x1: number; y1: number };
+  bbox?: { x0: number; y0: number; x1: number; y1: number };
 };
 
 type Recognizer = {
@@ -44,19 +44,20 @@ function collectWords(data: unknown): OcrWord[] {
     words?: WordLike[];
     blocks?: Array<{ paragraphs?: Array<{ lines?: Array<{ words?: WordLike[] }> }> }>;
   };
+  const toWord = (w: WordLike): OcrWord => ({
+    text: w.text,
+    confidence: Number.isFinite(w.confidence) ? w.confidence : 0,
+    bbox: w.bbox ?? { x0: 0, y0: 0, x1: 0, y1: 0 },
+  });
   if (page.words?.length) {
-    return page.words.map((w) => ({
-      text: w.text,
-      confidence: w.confidence,
-      bbox: w.bbox,
-    }));
+    return page.words.map(toWord);
   }
   const words: OcrWord[] = [];
   for (const block of page.blocks ?? []) {
     for (const para of block.paragraphs ?? []) {
       for (const line of para.lines ?? []) {
         for (const w of line.words ?? []) {
-          words.push({ text: w.text, confidence: w.confidence, bbox: w.bbox });
+          words.push(toWord(w));
         }
       }
     }
@@ -68,6 +69,9 @@ async function getWorker(): Promise<Recognizer> {
   if (!workerPromise) {
     workerPromise = (async () => {
       const tesseract = await import("tesseract.js");
+      // English only. Hindi tessdata is a separate multi-MB download on first OCR
+      // (not the JS bundle, but first-run cost) and mixed-script LSTM adds 0/O noise
+      // on English tables. Skip unless we lazy-load it behind a language toggle.
       const worker = await tesseract.createWorker("eng", tesseract.OEM.LSTM_ONLY, {
         logger: (m) => {
           progressHandler({
@@ -98,7 +102,13 @@ export async function extractGridFromImage(
 
   const worker = await getWorker();
   onProgress({ phase: "Reading the table…", progress: 0.4 });
-  const { data } = await worker.recognize(prepared.canvas, {}, { text: true, blocks: true });
+  // Word boxes + confidence are already in the Tesseract result; request both
+  // top-level words and nested blocks so collectWords can use either shape.
+  const { data } = await worker.recognize(
+    prepared.canvas,
+    {},
+    { text: true, blocks: true, words: true },
+  );
   const words = collectWords(data);
   onProgress({ phase: "Building the grid…", progress: 0.96 });
   const grid = reconstructGrid(words);
