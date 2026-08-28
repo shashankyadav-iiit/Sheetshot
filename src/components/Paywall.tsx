@@ -46,7 +46,7 @@ export function Paywall({ open, onClose, onUnlocked }: PaywallProps) {
             onClick={onClose}
             className="inline-flex h-11 items-center justify-center rounded-full border border-line text-sm text-muted hover:text-ink"
           >
-            Keep editing
+            Not now
           </button>
         </div>
         {dev && (

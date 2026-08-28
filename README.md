@@ -73,7 +73,7 @@ Checkout is the Polar Next.js adapter at `/checkout` (`@polar-sh/nextjs`), follo
 
 ## Free tier
 
-Three successful exports (CSV, `.xlsx`, or Copy TSV) per browser, counted in `localStorage` as `sheetshot_export_count`. After that, download/copy lock and a paywall modal points at `/checkout`.
+Three successful exports (CSV, `.xlsx`, or Copy TSV) per browser, counted in `localStorage` as `sheetshot_export_count`. After that, this browser cannot start a new OCR run, edit or copy the last grid, or download until it is unlocked. A paywall modal points at `/checkout`. Closing it with **Not now** leaves those locks in place.
 
 ## Out of scope (v1)
 
