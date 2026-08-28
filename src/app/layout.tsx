@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { DM_Sans, Fraunces, IBM_Plex_Mono } from "next/font/google";
 import type { ReactNode } from "react";
+import { SITE_NAME, SITE_URL, TAGLINE } from "@/lib/constants";
 import "./globals.css";
 
 const dmSans = DM_Sans({
@@ -20,12 +21,35 @@ const ibmPlexMono = IBM_Plex_Mono({
 });
 
 export const metadata: Metadata = {
+  metadataBase: new URL(SITE_URL),
   title: {
-    default: "Sheetshot — A screenshot of a table should just be a spreadsheet",
-    template: "%s · Sheetshot",
+    default: `${SITE_NAME} — ${TAGLINE.replace(/\.$/, "")}`,
+    template: `%s · ${SITE_NAME}`,
   },
   description:
     "Drop a photo of a table. Get an editable spreadsheet and download CSV or .xlsx. OCR runs in your browser — the image never leaves the device. $9 lifetime.",
+  openGraph: {
+    title: SITE_NAME,
+    description: TAGLINE,
+    url: SITE_URL,
+    siteName: SITE_NAME,
+    locale: "en_US",
+    type: "website",
+    images: [
+      {
+        url: "/og.png",
+        width: 1200,
+        height: 630,
+        alt: `${SITE_NAME} — ${TAGLINE}`,
+      },
+    ],
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: SITE_NAME,
+    description: TAGLINE,
+    images: ["/og.png"],
+  },
   icons: { icon: "/favicon.svg" },
 };
 

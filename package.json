@@ -8,7 +8,8 @@
     "start": "next start",
     "lint": "eslint",
     "test": "tsx --test src/lib/grid.test.ts",
-    "generate-samples": "python3 scripts/generate-samples.py"
+    "generate-samples": "python3 scripts/generate-samples.py",
+    "generate-og": "python3 scripts/generate-og.py"
   },
   "dependencies": {
     "@polar-sh/nextjs": "^0.9.6",

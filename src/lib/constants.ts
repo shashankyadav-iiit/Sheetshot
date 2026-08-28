@@ -1,4 +1,6 @@
 export const PRODUCT_NAME = "Sheetshot Lifetime";
+export const SITE_NAME = "Sheetshot";
+export const SITE_URL = "https://sheetshot-five.vercel.app";
 export const PRICE_USD = 9;
 export const FREE_EXPORTS = 3;
 export const UNLOCKED_KEY = "sheetshot_unlocked";
