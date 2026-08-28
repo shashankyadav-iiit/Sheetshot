@@ -3,9 +3,10 @@
 import { useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { SAMPLES, type SampleId } from "@/lib/constants";
-import { canExport, isUnlocked, recordExport, remainingFreeExports } from "@/lib/entitlement";
+import { recordExport, remainingFreeExports } from "@/lib/entitlement";
 import { copyTsv, downloadCsv, downloadXlsx } from "@/lib/export";
 import { extractGridFromImage, type OcrProgress } from "@/lib/ocr";
+import { useEntitlementState } from "@/lib/use-entitlement";
 import { takePendingImage } from "@/lib/pending-image";
 import { Dropzone } from "./Dropzone";
 import { Paywall } from "./Paywall";
@@ -36,26 +37,16 @@ export function AppClient() {
   const [error, setError] = useState<string | null>(null);
   const [paywall, setPaywall] = useState(false);
   const [copied, setCopied] = useState(false);
-  const [locked, setLocked] = useState(false);
+  const { canExport: entitled, unlocked, accountPaid } = useEntitlementState();
+  const locked = !entitled;
   const busy = useRef(false);
   const bootstrapped = useRef(false);
 
-  useEffect(() => {
-    const sync = () => setLocked(!canExport());
-    sync();
-    window.addEventListener("sheetshot-entitlement", sync);
-    window.addEventListener("storage", sync);
-    return () => {
-      window.removeEventListener("sheetshot-entitlement", sync);
-      window.removeEventListener("storage", sync);
-    };
-  }, []);
-
   const requireAccess = useCallback(() => {
-    if (canExport()) return true;
+    if (entitled) return true;
     setPaywall(true);
     return false;
-  }, []);
+  }, [entitled]);
 
   const run = useCallback(
     async (source: Blob) => {
@@ -141,10 +132,10 @@ export function AppClient() {
   }, [run]);
 
   const afterExport = useCallback(() => {
-    recordExport();
+    recordExport(accountPaid);
     window.dispatchEvent(new Event("sheetshot-entitlement"));
-    if (!isUnlocked() && remainingFreeExports() <= 0) setPaywall(true);
-  }, []);
+    if (!unlocked && remainingFreeExports(accountPaid) <= 0) setPaywall(true);
+  }, [accountPaid, unlocked]);
 
   return (
     <div className="mx-auto flex w-full max-w-6xl flex-1 flex-col gap-6 px-4 py-6 sm:px-6">

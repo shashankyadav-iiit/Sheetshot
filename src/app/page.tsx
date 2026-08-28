@@ -76,7 +76,8 @@ export default function HomePage() {
               </p>
               <p className="mt-2 font-display text-5xl text-ink">${PRICE_USD}</p>
               <p className="mt-1 text-sm text-muted">
-                Once, this browser. {FREE_EXPORTS} successful exports to try it. No account.
+                Once, on your Google account. {FREE_EXPORTS} successful exports to try it with no
+                login.
               </p>
             </div>
             <Link
@@ -125,7 +126,7 @@ function Proof({ kicker, title, body }: { kicker: string; title: string; body: s
 const FAQ = [
   {
     q: "Do I need an account?",
-    a: "No. There is no signup and nothing to log into. Lifetime unlock is stored in this browser.",
+    a: "Not for the free exports. To buy lifetime access, sign in with Google so the Polar order follows that account on any device.",
   },
   {
     q: "Does my image leave the device?",
@@ -133,7 +134,7 @@ const FAQ = [
   },
   {
     q: "What’s free, and what does $9 get me?",
-    a: `${FREE_EXPORTS} successful exports are free. After that, $${PRICE_USD} unlocks unlimited downloads on this browser for life.`,
+    a: `${FREE_EXPORTS} successful exports are free on this browser with no login. After that, $${PRICE_USD} unlocks unlimited use on the Google account you pay with.`,
   },
   {
     q: "Does it work on phone photos?",

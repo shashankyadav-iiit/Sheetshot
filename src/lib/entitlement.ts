@@ -4,13 +4,18 @@ function canUseStorage(): boolean {
   return typeof window !== "undefined" && typeof localStorage !== "undefined";
 }
 
-export function isUnlocked(): boolean {
-  if (!canUseStorage()) return false;
+/** Development-only local unlock. Production paid access is Google + Polar. */
+export function isDevUnlocked(): boolean {
+  if (!isDevUnlockAllowed() || !canUseStorage()) return false;
   return localStorage.getItem(UNLOCKED_KEY) === "true";
 }
 
+export function isUnlocked(accountPaid = false): boolean {
+  return accountPaid || isDevUnlocked();
+}
+
 export function unlockLifetime(): void {
-  if (!canUseStorage()) return;
+  if (!canUseStorage() || !isDevUnlockAllowed()) return;
   localStorage.setItem(UNLOCKED_KEY, "true");
 }
 
@@ -20,17 +25,17 @@ export function getExportCount(): number {
   return Number.isFinite(n) && n > 0 ? n : 0;
 }
 
-export function remainingFreeExports(): number {
-  if (isUnlocked()) return Number.POSITIVE_INFINITY;
+export function remainingFreeExports(accountPaid = false): number {
+  if (isUnlocked(accountPaid)) return Number.POSITIVE_INFINITY;
   return Math.max(0, FREE_EXPORTS - getExportCount());
 }
 
-export function canExport(): boolean {
-  return isUnlocked() || getExportCount() < FREE_EXPORTS;
+export function canExport(accountPaid = false): boolean {
+  return isUnlocked(accountPaid) || getExportCount() < FREE_EXPORTS;
 }
 
-export function recordExport(): void {
-  if (!canUseStorage() || isUnlocked()) return;
+export function recordExport(accountPaid = false): void {
+  if (!canUseStorage() || isUnlocked(accountPaid)) return;
   localStorage.setItem(EXPORT_COUNT_KEY, String(getExportCount() + 1));
 }
 

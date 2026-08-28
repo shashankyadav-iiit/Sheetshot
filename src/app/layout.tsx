@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { DM_Sans, Fraunces, IBM_Plex_Mono } from "next/font/google";
 import type { ReactNode } from "react";
+import { AuthSessionProvider } from "@/components/AuthSessionProvider";
 import { SITE_NAME, SITE_URL, TAGLINE } from "@/lib/constants";
 import "./globals.css";
 
@@ -63,7 +64,9 @@ export default function RootLayout({
       lang="en"
       className={`${dmSans.variable} ${fraunces.variable} ${ibmPlexMono.variable} h-full antialiased`}
     >
-      <body className="flex min-h-full flex-col bg-paper font-sans text-ink">{children}</body>
+      <body className="flex min-h-full flex-col bg-paper font-sans text-ink">
+        <AuthSessionProvider>{children}</AuthSessionProvider>
+      </body>
     </html>
   );
 }
