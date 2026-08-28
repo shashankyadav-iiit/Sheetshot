@@ -44,6 +44,38 @@ function grayscaleStats(data: Uint8ClampedArray): { mean: number; p2: number; p9
   return { mean, p2, p98 };
 }
 
+function removeRuleLines(image: ImageData) {
+  const { data, width, height } = image;
+  const luminance = (x: number, y: number) => {
+    const i = (y * width + x) * 4;
+    return 0.2126 * data[i]! + 0.7152 * data[i + 1]! + 0.0722 * data[i + 2]!;
+  };
+  const rowDark = new Array<number>(height).fill(0);
+  const colDark = new Array<number>(width).fill(0);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      if (luminance(x, y) < 90) {
+        rowDark[y]! += 1;
+        colDark[x]! += 1;
+      }
+    }
+  }
+  const lineRows = rowDark.map((d) => d / width > 0.42);
+  const lineCols = colDark.map((d) => d / height > 0.42);
+  for (let y = 0; y < height; y++) {
+    const hitRow = lineRows[y] || lineRows[y - 1] || lineRows[y + 1];
+    for (let x = 0; x < width; x++) {
+      const hitCol = lineCols[x] || lineCols[x - 1] || lineCols[x + 1];
+      if (hitRow || hitCol) {
+        const i = (y * width + x) * 4;
+        data[i] = 255;
+        data[i + 1] = 255;
+        data[i + 2] = 255;
+      }
+    }
+  }
+}
+
 function stretchAndMaybeInvert(image: ImageData): boolean {
   const { data } = image;
   const { mean, p2, p98 } = grayscaleStats(data);
@@ -149,6 +181,7 @@ export async function prepareImage(source: Blob): Promise<PreparedImage> {
 
   const imageData = ctx.getImageData(0, 0, width, height);
   const inverted = stretchAndMaybeInvert(imageData);
+  removeRuleLines(imageData);
   ctx.putImageData(imageData, 0, 0);
 
   const skewDegrees = estimateSkew(canvas);

@@ -28,10 +28,12 @@ def render_table(
     rows: list[list[str]],
     alignments: list[str] | None = None,
 ) -> None:
-    pad_x, pad_y = 28, 16
-    margin = 48
-    header_font = load_font(FONT_BOLD, 22)
-    cell_font = load_font(FONT_REG, 22)
+    # Extra horizontal gap between columns helps Tesseract split cells.
+    pad_x, pad_y = 36, 22
+    col_gap = 28
+    margin = 64
+    header_font = load_font(FONT_BOLD, 28)
+    cell_font = load_font(FONT_REG, 28)
 
     probe = Image.new("RGB", (10, 10), "white")
     draw = ImageDraw.Draw(probe)
@@ -45,47 +47,35 @@ def render_table(
         width = max(cell_size(draw, t, f)[0] for t, f in zip(texts, font_for))
         col_w.append(width + pad_x * 2)
 
-    row_h = 56
-    header_h = 60
-    width = margin * 2 + sum(col_w)
-    height = margin * 2 + header_h + row_h * len(rows)
+    row_h = 72
+    header_h = 76
+    table_w = sum(col_w) + col_gap * (n_cols - 1)
+    table_h = header_h + row_h * len(rows)
+    width = margin * 2 + table_w
+    height = margin * 2 + table_h
 
-    img = Image.new("RGB", (width, height), "#f7f2e8")
-    # Inner “screenshot” sheet
-    sheet = Image.new("RGB", (width - 24, height - 24), "#ffffff")
-    img.paste(sheet, (12, 12))
+    img = Image.new("RGB", (width, height), "#ffffff")
     draw = ImageDraw.Draw(img)
 
     origin_x, origin_y = margin, margin
-    # Outer table border
-    table_w = sum(col_w)
-    table_h = header_h + row_h * len(rows)
-    draw.rectangle(
-        [origin_x, origin_y, origin_x + table_w, origin_y + table_h],
-        outline="#1a1714",
-        width=2,
-    )
 
-    # Header fill
+    def col_x(index: int) -> int:
+        return origin_x + sum(col_w[:index]) + col_gap * index
+
+    # Header band — no box outline
     draw.rectangle(
         [origin_x, origin_y, origin_x + table_w, origin_y + header_h],
-        fill="#efe8dc",
-        outline="#1a1714",
+        fill="#f4f1ea",
+    )
+    draw.line(
+        [(origin_x, origin_y + header_h), (origin_x + table_w, origin_y + header_h)],
+        fill="#cfc6b8",
         width=2,
     )
 
-    def draw_row(texts: list[str], y: int, fonts: list[ImageFont.FreeTypeFont], fill: str | None):
-        x = origin_x
-        if fill:
-            draw.rectangle(
-                [origin_x + 2, y + 1, origin_x + table_w - 2, y + (header_h if y == origin_y else row_h) - 1],
-                fill=fill,
-            )
+    def draw_row(texts: list[str], y: int, fonts: list, h: int) -> None:
         for i, text in enumerate(texts):
-            h = header_h if y == origin_y else row_h
-            # vertical rules
-            if i > 0:
-                draw.line([(x, y), (x, y + h)], fill="#1a1714", width=1)
+            x = col_x(i)
             tw, th = cell_size(draw, text, fonts[i])
             if alignments[i] == "right":
                 tx = x + col_w[i] - pad_x - tw
@@ -93,15 +83,17 @@ def render_table(
                 tx = x + pad_x
             ty = y + (h - th) // 2 - 2
             draw.text((tx, ty), text, font=fonts[i], fill="#171411")
-            x += col_w[i]
 
-    draw_row(headers, origin_y, [header_font] * n_cols, None)
+    draw_row(headers, origin_y, [header_font] * n_cols, header_h)
 
     for r, row in enumerate(rows):
         y = origin_y + header_h + r * row_h
-        draw.line([(origin_x, y), (origin_x + table_w, y)], fill="#1a1714", width=1)
-        bg = "#fbfaf6" if r % 2 else None
-        draw_row(row, y, [cell_font] * n_cols, bg)
+        if r % 2 == 1:
+            draw.rectangle(
+                [origin_x, y, origin_x + table_w, y + row_h],
+                fill="#faf8f3",
+            )
+        draw_row(row, y, [cell_font] * n_cols, row_h)
 
     img.save(path, "PNG", optimize=True)
     print(f"wrote {path} ({img.size[0]}x{img.size[1]})")

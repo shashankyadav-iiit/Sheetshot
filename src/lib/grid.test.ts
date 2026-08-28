@@ -77,6 +77,32 @@ test("add and delete columns keep a usable grid", () => {
   assert.equal(slim[0]?.length, 2);
 });
 
+test("keeps multi-word item names in one cell when columns are far apart", () => {
+  const words: OcrWord[] = [
+    word("Item", 102, 90, 156, 120),
+    word("Qty", 466, 90, 511, 120),
+    word("Rate", 639, 90, 697, 120),
+    word("Amount", 802, 90, 906, 120),
+    word("Basmati", 102, 165, 199, 195),
+    word("Rice", 211, 165, 263, 195),
+    word("5kg", 274, 165, 316, 195),
+    word("12", 483, 165, 511, 195),
+    word("1,250", 630, 165, 698, 195),
+    word("15,000", 823, 165, 906, 195),
+    word("Wholesale", 100, 520, 229, 550),
+    word("Cashew", 240, 520, 339, 550),
+    word("2", 497, 520, 510, 550),
+    word("50,000", 613, 520, 697, 550),
+    word("1,00,000", 800, 520, 906, 550),
+  ];
+  const result = reconstructGrid(words);
+  assert.equal(result.cells[0]?.length, 4);
+  assert.equal(result.cells[1]?.[0], "Basmati Rice 5kg");
+  assert.equal(result.cells[1]?.[1], "12");
+  assert.equal(result.cells[2]?.[0], "Wholesale Cashew");
+  assert.equal(result.cells[2]?.[3], "1,00,000");
+});
+
 test("sparse tables get a warning instead of failing", () => {
   const words: OcrWord[] = [
     word("A", 10, 10, 30, 28),

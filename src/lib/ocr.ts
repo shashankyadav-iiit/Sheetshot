@@ -19,7 +19,11 @@ type WordLike = {
 };
 
 type Recognizer = {
-  recognize: (image: HTMLCanvasElement) => Promise<{ data: unknown }>;
+  recognize: (
+    image: HTMLCanvasElement,
+    options?: Record<string, unknown>,
+    output?: Record<string, boolean>,
+  ) => Promise<{ data: unknown }>;
 };
 
 let progressHandler: (p: OcrProgress) => void = () => {};
@@ -94,7 +98,7 @@ export async function extractGridFromImage(
 
   const worker = await getWorker();
   onProgress({ phase: "Reading the table…", progress: 0.4 });
-  const { data } = await worker.recognize(prepared.canvas);
+  const { data } = await worker.recognize(prepared.canvas, {}, { text: true, blocks: true });
   const words = collectWords(data);
   onProgress({ phase: "Building the grid…", progress: 0.96 });
   const grid = reconstructGrid(words);

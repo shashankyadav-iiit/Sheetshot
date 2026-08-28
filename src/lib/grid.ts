@@ -68,10 +68,20 @@ function clusterRows(words: OcrWord[], rowThreshold: number): OcrWord[][] {
   return rows;
 }
 
-function mergeRowWords(row: OcrWord[], em: number): OcrWord[] {
+function typicalCharWidth(words: OcrWord[]): number {
+  const widths = words
+    .map((w) => {
+      const letters = w.text.replace(/\s/g, "");
+      return letters.length >= 2 ? width(w) / letters.length : 0;
+    })
+    .filter((n) => n > 0);
+  return median(widths) || Math.max(8, median(words.map(width)) / 4);
+}
+
+function mergeRowWords(row: OcrWord[], em: number, charW: number): OcrWord[] {
   const sorted = [...row].sort((a, b) => a.bbox.x0 - b.bbox.x0);
   const merged: OcrWord[] = [];
-  const cellGap = Math.max(em * 0.55, 10);
+  const cellGap = Math.max(em * 1.3, charW * 2.4, 16);
 
   for (const word of sorted) {
     const prev = merged[merged.length - 1];
@@ -81,10 +91,12 @@ function mergeRowWords(row: OcrWord[], em: number): OcrWord[] {
     }
     const gap = word.bbox.x0 - prev.bbox.x1;
     const glue = shouldGlueTokens(prev.text, word.text, gap, em);
-    const sameCell = gap <= cellGap || glue || (looksNumericToken(prev.text) && looksNumericToken(word.text) && gap <= em * 1.4);
+    const numericGlue =
+      looksNumericToken(prev.text) && looksNumericToken(word.text) && gap <= Math.max(em * 1.4, charW * 3);
+    const sameCell = gap <= cellGap || glue || numericGlue;
 
     if (sameCell) {
-      prev.text = joinTokens(prev.text, word.text, glue || gap <= em * 0.28);
+      prev.text = joinTokens(prev.text, word.text, glue || gap <= Math.max(4, charW * 0.45));
       prev.bbox.x1 = Math.max(prev.bbox.x1, word.bbox.x1);
       prev.bbox.y0 = Math.min(prev.bbox.y0, word.bbox.y0);
       prev.bbox.y1 = Math.max(prev.bbox.y1, word.bbox.y1);
@@ -97,9 +109,19 @@ function mergeRowWords(row: OcrWord[], em: number): OcrWord[] {
 }
 
 function columnAnchors(rows: OcrWord[][], em: number): number[] {
-  const fullest = rows.reduce((best, row) => (row.length > best.length ? row : best), rows[0] ?? []);
-  if (fullest.length >= 2) {
-    return fullest.map(xCenter);
+  const freq = new Map<number, number>();
+  for (const row of rows) freq.set(row.length, (freq.get(row.length) ?? 0) + 1);
+  let bestCount = 0;
+  let bestFreq = -1;
+  for (const [count, n] of freq) {
+    if (n > bestFreq || (n === bestFreq && count > bestCount)) {
+      bestCount = count;
+      bestFreq = n;
+    }
+  }
+  const template = rows.find((row) => row.length === bestCount) ?? rows[0];
+  if (template && template.length >= 2) {
+    return template.map(xCenter);
   }
 
   const centers = rows.flat().map(xCenter).sort((a, b) => a - b);
@@ -176,8 +198,9 @@ export function reconstructGrid(words: OcrWord[]): GridResult {
   }
 
   const em = median(cleaned.map(height));
+  const charW = typicalCharWidth(cleaned);
   const rowThreshold = Math.max(em * 0.62, 12);
-  const rows = clusterRows(cleaned, rowThreshold).map((row) => mergeRowWords(row, em));
+  const rows = clusterRows(cleaned, rowThreshold).map((row) => mergeRowWords(row, em, charW));
   const anchors = columnAnchors(rows, em);
   const raw = assignColumns(rows, anchors);
   const cells = dropEmptyEdges(raw);
