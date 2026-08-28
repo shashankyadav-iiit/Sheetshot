@@ -123,7 +123,7 @@ function estimateSkew(source: HTMLCanvasElement): number {
   const probe = document.createElement("canvas");
   probe.width = w;
   probe.height = h;
-  const ctx = probe.getContext("2d");
+  const ctx = probe.getContext("2d", { willReadFrequently: true });
   if (!ctx) return 0;
 
   let bestAngle = 0;
