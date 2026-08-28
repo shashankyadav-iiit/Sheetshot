@@ -1,8 +1,15 @@
+import type { Metadata } from "next";
 import Link from "next/link";
 import { Header } from "@/components/Header";
 import { LandingHero } from "@/components/LandingHero";
 import { Logo } from "@/components/Logo";
-import { FREE_EXPORTS, PRICE_USD, TAGLINE } from "@/lib/constants";
+import { FREE_EXPORTS, PRICE_USD, SITE_URL, TAGLINE } from "@/lib/constants";
+
+export const metadata: Metadata = {
+  alternates: {
+    canonical: SITE_URL,
+  },
+};
 
 export default function HomePage() {
   return (
@@ -80,6 +87,20 @@ export default function HomePage() {
             </Link>
           </div>
         </section>
+
+        <section className="mt-20" aria-labelledby="faq-heading">
+          <h2 id="faq-heading" className="font-display text-3xl text-ink">
+            FAQ
+          </h2>
+          <dl className="mt-8 divide-y divide-line border-y border-line">
+            {FAQ.map((item) => (
+              <div key={item.q} className="grid gap-2 py-6 sm:grid-cols-[minmax(0,0.9fr)_minmax(0,1.4fr)] sm:gap-10">
+                <dt className="font-medium text-ink">{item.q}</dt>
+                <dd className="text-sm leading-6 text-muted">{item.a}</dd>
+              </div>
+            ))}
+          </dl>
+        </section>
       </main>
       <footer className="border-t border-line">
         <div className="mx-auto flex max-w-6xl flex-col gap-3 px-4 py-8 text-sm text-muted sm:flex-row sm:items-center sm:justify-between sm:px-6">
@@ -100,3 +121,22 @@ function Proof({ kicker, title, body }: { kicker: string; title: string; body: s
     </div>
   );
 }
+
+const FAQ = [
+  {
+    q: "Do I need an account?",
+    a: "No. There is no signup and nothing to log into. Lifetime unlock is stored in this browser.",
+  },
+  {
+    q: "Does my image leave the device?",
+    a: "No. OCR runs in the browser. The photo stays on your device — Sheetshot never uploads it.",
+  },
+  {
+    q: "What’s free, and what does $9 get me?",
+    a: `${FREE_EXPORTS} successful exports are free. After that, $${PRICE_USD} unlocks unlimited downloads on this browser for life.`,
+  },
+  {
+    q: "Does it work on phone photos?",
+    a: "Yes. Snap a marks sheet, receipt, or a table on a screen and drop the photo in. We fix EXIF rotation before reading it.",
+  },
+] as const;

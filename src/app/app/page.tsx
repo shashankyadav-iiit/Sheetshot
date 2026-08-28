@@ -6,6 +6,12 @@ import { Header } from "@/components/Header";
 export const metadata: Metadata = {
   title: "App",
   description: "Drop a table screenshot and download CSV or .xlsx. Processing stays in the browser.",
+  alternates: {
+    canonical: "/app",
+  },
+  openGraph: {
+    url: "/app",
+  },
 };
 
 export default function AppPage() {
