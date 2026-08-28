@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "tsx --test src/lib/grid.test.ts",
+    "test": "tsx --test src/lib/grid.test.ts src/lib/polar.test.ts",
     "generate-samples": "python3 scripts/generate-samples.py",
     "generate-og": "python3 scripts/generate-og.py"
   },
@@ -15,6 +15,7 @@
     "@polar-sh/nextjs": "^0.9.6",
     "fflate": "^0.8.3",
     "next": "16.3.3",
+    "next-auth": "^5.0.0-beta.32",
     "react": "19.2.8",
     "react-dom": "19.2.8",
     "tesseract.js": "^7.0.0",

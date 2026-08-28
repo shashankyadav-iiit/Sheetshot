@@ -1,5 +1,7 @@
 import { Checkout } from "@polar-sh/nextjs";
 import { NextRequest, NextResponse } from "next/server";
+import { auth, signIn } from "@/auth";
+import { googleAuthConfigured } from "@/lib/auth-env";
 
 export const dynamic = "force-dynamic";
 
@@ -26,12 +28,25 @@ function successUrlFor(request: NextRequest): string {
   return `${origin}/success?checkout_id={CHECKOUT_ID}`;
 }
 
+function redirectUnlock(request: NextRequest, reason: string) {
+  const url = request.nextUrl.clone();
+  url.pathname = "/unlock";
+  url.search = `reason=${encodeURIComponent(reason)}`;
+  return NextResponse.redirect(url);
+}
+
 export async function GET(request: NextRequest) {
   if (!polarConfigured()) {
-    const url = request.nextUrl.clone();
-    url.pathname = "/unlock";
-    url.search = "reason=not-configured";
-    return NextResponse.redirect(url);
+    return redirectUnlock(request, "not-configured");
+  }
+  if (!googleAuthConfigured()) {
+    return redirectUnlock(request, "google-not-configured");
+  }
+
+  const session = await auth();
+  const email = session?.user?.email?.trim();
+  if (!email) {
+    return signIn("google", { redirectTo: "/checkout" });
   }
 
   const productId = process.env.POLAR_PRODUCT_ID!.trim();
@@ -39,6 +54,11 @@ export async function GET(request: NextRequest) {
   const rewritten = request.nextUrl.clone();
   if (!rewritten.searchParams.getAll("products").length) {
     rewritten.searchParams.set("products", productId);
+  }
+  rewritten.searchParams.set("customerEmail", email);
+  const name = session?.user?.name?.trim();
+  if (name) {
+    rewritten.searchParams.set("customerName", name);
   }
 
   const handler = Checkout({

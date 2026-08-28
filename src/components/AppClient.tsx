@@ -3,9 +3,10 @@
 import { useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { SAMPLES, type SampleId } from "@/lib/constants";
-import { canExport, isUnlocked, recordExport, remainingFreeExports } from "@/lib/entitlement";
+import { recordExport, remainingFreeExports } from "@/lib/entitlement";
 import { copyTsv, downloadCsv, downloadXlsx } from "@/lib/export";
 import { extractGridFromImage, type OcrProgress } from "@/lib/ocr";
+import { useEntitlementState } from "@/lib/use-entitlement";
 import { takePendingImage } from "@/lib/pending-image";
 import { Dropzone } from "./Dropzone";
 import { Paywall } from "./Paywall";
@@ -36,44 +37,57 @@ export function AppClient() {
   const [error, setError] = useState<string | null>(null);
   const [paywall, setPaywall] = useState(false);
   const [copied, setCopied] = useState(false);
+  const { canExport: entitled, unlocked, accountPaid } = useEntitlementState();
+  const locked = !entitled;
   const busy = useRef(false);
   const bootstrapped = useRef(false);
 
-  const run = useCallback(async (source: Blob) => {
-    if (busy.current) return;
-    busy.current = true;
-    setStatus("processing");
-    setError(null);
-    setWarning(null);
-    setCopied(false);
-    setPreviewUrl(URL.createObjectURL(source));
-    try {
-      const result = await extractGridFromImage(source, setProgress);
-      setPreviewUrl(result.previewUrl);
-      if (result.empty || result.cells.length === 0) {
-        setCells([]);
-        setError(result.warning || "Couldn't find a table in this image.");
+  const requireAccess = useCallback(() => {
+    if (entitled) return true;
+    setPaywall(true);
+    return false;
+  }, [entitled]);
+
+  const run = useCallback(
+    async (source: Blob) => {
+      if (!requireAccess()) return;
+      if (busy.current) return;
+      busy.current = true;
+      setStatus("processing");
+      setError(null);
+      setWarning(null);
+      setCopied(false);
+      setPreviewUrl(URL.createObjectURL(source));
+      try {
+        const result = await extractGridFromImage(source, setProgress);
+        setPreviewUrl(result.previewUrl);
+        if (result.empty || result.cells.length === 0) {
+          setCells([]);
+          setError(result.warning || "Couldn't find a table in this image.");
+          setStatus("error");
+          return;
+        }
+        setCells(result.cells);
+        setWarning(result.warning);
+        setStatus("ready");
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "Something went wrong while reading the image.";
+        setError(
+          /decode|image|bitmap|canvas/i.test(message)
+            ? "Couldn't read that file. Use a JPEG, PNG, or WebP — iPhone HEIC often needs an export."
+            : message,
+        );
         setStatus("error");
-        return;
+      } finally {
+        busy.current = false;
       }
-      setCells(result.cells);
-      setWarning(result.warning);
-      setStatus("ready");
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "Something went wrong while reading the image.";
-      setError(
-        /decode|image|bitmap|canvas/i.test(message)
-          ? "Couldn't read that file. Use a JPEG, PNG, or WebP — iPhone HEIC often needs an export."
-          : message,
-      );
-      setStatus("error");
-    } finally {
-      busy.current = false;
-    }
-  }, []);
+    },
+    [requireAccess],
+  );
 
   const loadSample = useCallback(
     async (id: SampleId) => {
+      if (!requireAccess()) return;
       const res = await fetch(SAMPLES[id].src);
       if (!res.ok) {
         setError("Sample image failed to load.");
@@ -82,7 +96,7 @@ export function AppClient() {
       }
       await run(await res.blob());
     },
-    [run],
+    [requireAccess, run],
   );
 
   useEffect(() => {
@@ -117,17 +131,11 @@ export function AppClient() {
     return () => window.removeEventListener("paste", onPaste);
   }, [run]);
 
-  const guardExport = useCallback(() => {
-    if (canExport()) return true;
-    setPaywall(true);
-    return false;
-  }, []);
-
   const afterExport = useCallback(() => {
-    recordExport();
+    recordExport(accountPaid);
     window.dispatchEvent(new Event("sheetshot-entitlement"));
-    if (!isUnlocked() && remainingFreeExports() <= 0) setPaywall(true);
-  }, []);
+    if (!unlocked && remainingFreeExports(accountPaid) <= 0) setPaywall(true);
+  }, [accountPaid, unlocked]);
 
   return (
     <div className="mx-auto flex w-full max-w-6xl flex-1 flex-col gap-6 px-4 py-6 sm:px-6">
@@ -144,7 +152,7 @@ export function AppClient() {
               type="button"
               className="rounded-full bg-ink px-4 py-2 text-sm font-medium text-surface hover:bg-ink/90"
               onClick={() => {
-                if (!guardExport()) return;
+                if (!requireAccess()) return;
                 downloadCsv(cells);
                 afterExport();
               }}
@@ -155,7 +163,7 @@ export function AppClient() {
               type="button"
               className="rounded-full border border-line bg-surface px-4 py-2 text-sm font-medium hover:border-ink/20"
               onClick={() => {
-                if (!guardExport()) return;
+                if (!requireAccess()) return;
                 downloadXlsx(cells);
                 afterExport();
               }}
@@ -166,7 +174,7 @@ export function AppClient() {
               type="button"
               className="rounded-full border border-line bg-surface px-4 py-2 text-sm font-medium hover:border-ink/20"
               onClick={async () => {
-                if (!guardExport()) return;
+                if (!requireAccess()) return;
                 await copyTsv(cells);
                 afterExport();
                 setCopied(true);
@@ -181,7 +189,9 @@ export function AppClient() {
 
       {status === "idle" && (
         <div className="grid gap-6 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,0.8fr)]">
-          <Dropzone onFile={(file) => void run(file)} />
+          <div onClick={locked ? () => setPaywall(true) : undefined}>
+            <Dropzone disabled={locked} onFile={(file) => void run(file)} />
+          </div>
           <div>
             <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-muted">
               Or try a sample
@@ -247,7 +257,9 @@ export function AppClient() {
               // eslint-disable-next-line @next/next/no-img-element
               <img src={previewUrl} alt="Source" className="w-full rounded-xl border border-line bg-surface" />
             )}
-            <Dropzone compact onFile={(file) => void run(file)} />
+            <div onClick={locked ? () => setPaywall(true) : undefined}>
+              <Dropzone compact disabled={locked} onFile={(file) => void run(file)} />
+            </div>
             <div className="flex flex-col gap-2">
               {Object.values(SAMPLES).map((sample) => (
                 <button
@@ -272,7 +284,9 @@ export function AppClient() {
                 {error}
               </div>
             )}
-            {status === "ready" && <Spreadsheet cells={cells} onChange={setCells} />}
+            {status === "ready" && (
+              <Spreadsheet cells={cells} onChange={setCells} locked={locked} />
+            )}
             {status === "error" && (
               <p className="text-sm text-muted">
                 Crop tighter to the table, shoot straighter, or start from a sample.

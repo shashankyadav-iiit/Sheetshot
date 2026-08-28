@@ -2,6 +2,8 @@
 
 import { PRICE_USD, PRODUCT_NAME } from "@/lib/constants";
 import { isDevUnlockAllowed, unlockLifetime } from "@/lib/entitlement";
+import { startGoogleSignIn } from "@/lib/start-google-sign-in";
+import { useEntitlementState } from "@/lib/use-entitlement";
 
 type PaywallProps = {
   open: boolean;
@@ -10,8 +12,17 @@ type PaywallProps = {
 };
 
 export function Paywall({ open, onClose, onUnlocked }: PaywallProps) {
+  const { signedIn } = useEntitlementState();
   if (!open) return null;
   const dev = isDevUnlockAllowed();
+
+  const onUnlock = () => {
+    if (!signedIn) {
+      void startGoogleSignIn("/checkout");
+      return;
+    }
+    window.location.href = "/checkout";
+  };
 
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center bg-ink/40 p-4 sm:items-center">
@@ -31,22 +42,23 @@ export function Paywall({ open, onClose, onUnlocked }: PaywallProps) {
           Three tries. Then it&apos;s {PRODUCT_NAME} for ${PRICE_USD}.
         </h2>
         <p className="mt-3 text-sm leading-6 text-muted">
-          Unlock this browser forever. No account, no subscription. OCR still runs on your
-          machine — we only send you to Polar to pay.
+          Sign in with Google, then pay once on Polar. Lifetime follows that Google account on any
+          device. OCR still runs on your machine.
         </p>
         <div className="mt-6 flex flex-col gap-2">
-          <a
-            href="/checkout"
+          <button
+            type="button"
+            onClick={onUnlock}
             className="inline-flex h-11 items-center justify-center rounded-full bg-accent text-sm font-medium text-white hover:bg-accent-hover"
           >
             Unlock for ${PRICE_USD}
-          </a>
+          </button>
           <button
             type="button"
             onClick={onClose}
             className="inline-flex h-11 items-center justify-center rounded-full border border-line text-sm text-muted hover:text-ink"
           >
-            Keep editing
+            Not now
           </button>
         </div>
         {dev && (
