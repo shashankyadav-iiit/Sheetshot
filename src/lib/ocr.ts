@@ -1,4 +1,4 @@
-import { createWorker, type Worker } from 'tesseract.js'
+import { createWorker, PSM, type Worker } from 'tesseract.js'
 
 export interface OcrWord {
   text: string
@@ -13,13 +13,19 @@ let progressHandler: ((p: number) => void) | null = null
 
 function getWorker(): Promise<Worker> {
   if (!workerPromise) {
-    workerPromise = createWorker('eng', 1, {
-      logger: (m) => {
-        if (m.status === 'recognizing text' && progressHandler) {
-          progressHandler(m.progress)
-        }
-      },
-    })
+    workerPromise = (async () => {
+      const worker = await createWorker('eng', 1, {
+        logger: (m) => {
+          if (m.status === 'recognizing text' && progressHandler) {
+            progressHandler(m.progress)
+          }
+        },
+      })
+      // Fully automatic page segmentation. The tesseract.js default is
+      // SINGLE_BLOCK (PSM 6), which collapses bordered tables into garbage.
+      await worker.setParameters({ tessedit_pageseg_mode: PSM.AUTO })
+      return worker
+    })()
   }
   return workerPromise
 }
@@ -31,35 +37,26 @@ function toWord(node: Record<string, unknown>): OcrWord | null {
   return { text, x0: bbox.x0, y0: bbox.y0, x1: bbox.x1, y1: bbox.y1 }
 }
 
-// tesseract.js returns a nested hierarchy (blocks > paragraphs > lines > words)
-// when the `blocks` output is enabled. Walk it and collect the word-level boxes.
+// tesseract.js exposes both a flat `words` array and a nested hierarchy
+// (blocks > paragraphs > lines > words). The root object also carries a
+// `symbols` array, so we descend by container priority — finest first — and
+// only treat true leaves (no container children) as words.
 function flattenWords(data: unknown): OcrWord[] {
   const out: OcrWord[] = []
   const visit = (node: unknown) => {
     if (!node || typeof node !== 'object') return
     const obj = node as Record<string, unknown>
 
-    // A word node carries `symbols`; treat it as a leaf.
-    if (Array.isArray(obj.symbols)) {
-      const word = toWord(obj)
-      if (word) out.push(word)
-      return
-    }
-
-    let descended = false
-    for (const key of ['blocks', 'paragraphs', 'lines', 'words']) {
+    for (const key of ['words', 'lines', 'paragraphs', 'blocks']) {
       const child = obj[key]
       if (Array.isArray(child)) {
-        descended = true
         child.forEach(visit)
+        return
       }
     }
 
-    // Fallback for flat shapes that expose words without a `symbols` array.
-    if (!descended) {
-      const word = toWord(obj)
-      if (word) out.push(word)
-    }
+    const word = toWord(obj)
+    if (word) out.push(word)
   }
   visit(data)
   return out

@@ -66,33 +66,53 @@ function rowToCells(rowWords: OcrWord[], gapTol: number): Cell[] {
   return cells
 }
 
-// Cluster cell left edges from every row into a shared set of column anchors.
-function clusterColumns(starts: number[], tol: number): number[] {
-  if (starts.length === 0) return []
-  const sorted = [...starts].sort((a, b) => a - b)
-  const groups: number[][] = [[sorted[0]]]
-  for (let i = 1; i < sorted.length; i++) {
-    const group = groups[groups.length - 1]
-    if (sorted[i] - group[group.length - 1] <= tol) {
-      group.push(sorted[i])
-    } else {
-      groups.push([sorted[i]])
+// Find column boundaries via a vertical-whitespace projection: any x-interval
+// that no cell covers (across every row) and is wider than `minGutter` is a
+// gutter between columns. Using each cell's full [x0, x1] span makes this
+// robust to left/right/center alignment within a column.
+function findColumnBoundaries(
+  cells: Cell[],
+  minX: number,
+  maxX: number,
+  minGutter: number,
+): number[] {
+  if (cells.length === 0) return []
+
+  const step = Math.max(1, Math.round(minGutter / 4))
+  const width = Math.max(1, Math.ceil((maxX - minX) / step) + 1)
+  const covered = new Array<boolean>(width).fill(false)
+
+  for (const cell of cells) {
+    const start = Math.floor((cell.x0 - minX) / step)
+    const end = Math.ceil((cell.x1 - minX) / step)
+    for (let i = Math.max(0, start); i <= Math.min(width - 1, end); i++) {
+      covered[i] = true
     }
   }
-  return groups.map((g) => g.reduce((sum, v) => sum + v, 0) / g.length)
+
+  const boundaries: number[] = []
+  let gapStart = -1
+  for (let i = 0; i < width; i++) {
+    if (!covered[i]) {
+      if (gapStart === -1) gapStart = i
+    } else if (gapStart !== -1) {
+      const gapWidth = (i - gapStart) * step
+      if (gapWidth >= minGutter) {
+        boundaries.push(minX + ((gapStart + i) / 2) * step)
+      }
+      gapStart = -1
+    }
+  }
+  return boundaries
 }
 
-function nearestColumn(x: number, anchors: number[]): number {
-  let best = 0
-  let bestDist = Infinity
-  for (let i = 0; i < anchors.length; i++) {
-    const dist = Math.abs(anchors[i] - x)
-    if (dist < bestDist) {
-      bestDist = dist
-      best = i
-    }
+function columnOf(center: number, boundaries: number[]): number {
+  let col = 0
+  for (const b of boundaries) {
+    if (center > b) col++
+    else break
   }
-  return best
+  return col
 }
 
 function trimEmpty(grid: string[][]): string[][] {
@@ -125,21 +145,22 @@ export function wordsToTable(words: OcrWord[]): string[][] {
   const medHeight = median(heights) || 12
   const rowTol = medHeight * 0.7
   const gapTol = medHeight * 1.1
-  const colTol = medHeight * 1.5
+  const minGutter = medHeight * 0.9
 
   const rows = groupRows(words, rowTol)
   const rowCells = rows.map((rowWords) => rowToCells(rowWords, gapTol))
+  const allCells = rowCells.flat()
 
-  const anchors = clusterColumns(
-    rowCells.flat().map((cell) => cell.x0),
-    colTol,
-  )
-  if (anchors.length === 0) return []
+  const minX = Math.min(...allCells.map((c) => c.x0))
+  const maxX = Math.max(...allCells.map((c) => c.x1))
+  const boundaries = findColumnBoundaries(allCells, minX, maxX, minGutter)
+  const numCols = boundaries.length + 1
 
   const grid: string[][] = rowCells.map((cells) => {
-    const line = new Array<string>(anchors.length).fill('')
+    const line = new Array<string>(numCols).fill('')
     for (const cell of cells) {
-      const col = nearestColumn(cell.x0, anchors)
+      const center = (cell.x0 + cell.x1) / 2
+      const col = columnOf(center, boundaries)
       line[col] = line[col] ? `${line[col]} ${cell.text}` : cell.text
     }
     return line
