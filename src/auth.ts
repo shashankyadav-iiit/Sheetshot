@@ -1,13 +1,26 @@
 import NextAuth from "next-auth";
 import Google from "next-auth/providers/google";
-import { authSecret, googleAuthConfigured } from "@/lib/auth-env";
+import { authSecret, googleAuthConfigured, useSecureAuthCookies } from "@/lib/auth-env";
 import { emailHasPaidSheetshot } from "@/lib/polar";
 
-export const { handlers, auth, signIn, signOut, unstable_update } = NextAuth({
+export const { handlers, auth, signIn, signOut, unstable_update } = NextAuth(() => ({
   secret: authSecret(),
   trustHost: true,
+  basePath: "/api/auth",
+  useSecureCookies: useSecureAuthCookies(),
   session: { strategy: "jwt" },
-  providers: googleAuthConfigured() ? [Google] : [],
+  providers: googleAuthConfigured()
+    ? [
+        Google({
+          clientId: process.env.AUTH_GOOGLE_ID,
+          clientSecret: process.env.AUTH_GOOGLE_SECRET,
+          // PKCE verifier lives in `__Secure-authjs.pkce.code_verifier`. A fetch()
+          // sign-in followed by window.location to Google can leave a stale
+          // verifier cookie; the client starts Google via a top-level form POST.
+          checks: ["pkce", "state"],
+        }),
+      ]
+    : [],
   callbacks: {
     async jwt({ token, user, trigger }) {
       const email = user?.email ?? token.email ?? undefined;
@@ -31,4 +44,4 @@ export const { handlers, auth, signIn, signOut, unstable_update } = NextAuth({
       return session;
     },
   },
-});
+}));
