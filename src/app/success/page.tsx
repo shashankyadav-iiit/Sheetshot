@@ -5,51 +5,38 @@ import { Suspense, useEffect, useRef, useState } from "react";
 import { useSession } from "next-auth/react";
 import { useSearchParams } from "next/navigation";
 import { Header } from "@/components/Header";
+import { confirmPolarEntitlement, refreshSessionInBackground } from "@/lib/confirm-success";
 import { startGoogleSignIn } from "@/lib/start-google-sign-in";
 
 function SuccessBody() {
   const params = useSearchParams();
   const checkoutId = params.get("checkout_id") ?? params.get("checkoutId");
   const { status, update } = useSession();
-  const [state, setState] = useState<"loading" | "need-signin" | "paid" | "unpaid" | "error">(
-    "loading",
-  );
+  const [state, setState] = useState<"loading" | "paid" | "unpaid" | "error">("loading");
   const [email, setEmail] = useState<string | null>(null);
   const checked = useRef(false);
 
   useEffect(() => {
-    if (status === "loading") return;
-    if (status === "unauthenticated") {
-      setState("need-signin");
-      return;
-    }
+    if (status !== "authenticated") return;
     if (checked.current) return;
     checked.current = true;
 
     let cancelled = false;
     const run = async () => {
-      try {
-        const url = checkoutId
-          ? `/api/entitlement?checkout_id=${encodeURIComponent(checkoutId)}`
-          : "/api/entitlement";
-        const res = await fetch(url, { cache: "no-store" });
-        if (!res.ok) {
-          if (!cancelled) setState("error");
-          return;
-        }
-        const data = (await res.json()) as { paid?: boolean; email?: string | null };
-        if (cancelled) return;
-        setEmail(data.email ?? null);
-        if (data.paid) {
-          await update();
-          window.dispatchEvent(new Event("sheetshot-entitlement"));
-          setState("paid");
-        } else {
-          setState("unpaid");
-        }
-      } catch {
-        if (!cancelled) setState("error");
+      const outcome = await confirmPolarEntitlement({
+        checkoutId,
+        shouldStop: () => cancelled,
+      });
+      if (cancelled) return;
+      setEmail(outcome.email);
+      if (outcome.state === "paid") {
+        // Never block Unlocked on next-auth session.update() — it can hang on Polar.
+        setState("paid");
+        window.dispatchEvent(new Event("sheetshot-entitlement"));
+        refreshSessionInBackground(update);
+        return;
       }
+      setState(outcome.state);
     };
     void run();
     return () => {
@@ -60,10 +47,11 @@ function SuccessBody() {
   const callbackUrl = checkoutId
     ? `/success?checkout_id=${encodeURIComponent(checkoutId)}`
     : "/success";
+  const view = status === "unauthenticated" ? "need-signin" : state;
 
   return (
     <main className="mx-auto flex w-full max-w-xl flex-1 flex-col justify-center px-4 py-16">
-      {state === "loading" && (
+      {view === "loading" && (
         <>
           <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-accent">Confirming</p>
           <h1 className="mt-3 font-display text-4xl leading-tight text-ink">
@@ -75,7 +63,7 @@ function SuccessBody() {
         </>
       )}
 
-      {state === "need-signin" && (
+      {view === "need-signin" && (
         <>
           <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-accent">Sign in</p>
           <h1 className="mt-3 font-display text-4xl leading-tight text-ink">
@@ -97,7 +85,7 @@ function SuccessBody() {
         </>
       )}
 
-      {state === "paid" && (
+      {view === "paid" && (
         <>
           <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-accent">Unlocked</p>
           <h1 className="mt-3 font-display text-4xl leading-tight text-ink">
@@ -120,7 +108,7 @@ function SuccessBody() {
         </>
       )}
 
-      {state === "unpaid" && (
+      {view === "unpaid" && (
         <>
           <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-accent">Not found</p>
           <h1 className="mt-3 font-display text-4xl leading-tight text-ink">
@@ -147,7 +135,7 @@ function SuccessBody() {
         </>
       )}
 
-      {state === "error" && (
+      {view === "error" && (
         <>
           <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-accent">Error</p>
           <h1 className="mt-3 font-display text-4xl leading-tight text-ink">
