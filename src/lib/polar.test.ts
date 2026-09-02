@@ -5,6 +5,7 @@ import {
   emailHasPaidSheetshot,
   emailsMatch,
   orderGrantsLifetime,
+  polarCollectionPath,
   polarEmail,
   polarGet,
   polarListItems,
@@ -130,6 +131,18 @@ test("polarListItems accepts items, data, or a raw array", () => {
   assert.deepEqual(polarListItems(null), []);
 });
 
+test("polarCollectionPath matches Polar SDK trailing-slash list URLs", () => {
+  assert.equal(polarCollectionPath("orders"), "/v1/orders/");
+  assert.equal(
+    polarCollectionPath("orders", { checkout_id: "chk_1", limit: 20 }),
+    "/v1/orders/?checkout_id=chk_1&limit=20",
+  );
+  assert.equal(
+    polarCollectionPath("customers", { email: "ada@example.com", limit: 10 }),
+    "/v1/customers/?email=ada%40example.com&limit=10",
+  );
+});
+
 test("polarServer stays sandbox unless POLAR_SERVER is production", () => {
   delete env.POLAR_SERVER;
   assert.equal(polarServer(), "sandbox");
@@ -164,7 +177,7 @@ test("emailHasPaidSheetshot treats confirmed checkout without email as paid via 
     if (url.includes(`/v1/checkouts/${checkoutId}`)) {
       return jsonResponse({ status: "confirmed", product_id: "prod_1" });
     }
-    if (url.includes("/v1/orders?") && url.includes(`checkout_id=${checkoutId}`)) {
+    if (url.includes("/v1/orders/") && url.includes(`checkout_id=${checkoutId}`)) {
       return jsonResponse({
         items: [
           {
@@ -222,7 +235,7 @@ test("emailHasPaidSheetshot does not grant access when checkout email does not m
         product_id: "prod_1",
       });
     }
-    if (url.includes("/v1/orders?")) {
+    if (url.includes("/v1/orders/")) {
       return jsonResponse({
         items: [
           {
@@ -237,5 +250,99 @@ test("emailHasPaidSheetshot does not grant access when checkout email does not m
   };
 
   assert.equal(await emailHasPaidSheetshot("minimonsterlab@gmail.com", "chk_1"), false);
+});
+
+test("email-only entitlement finds a paid product order without customers:read", async () => {
+  env.POLAR_ACCESS_TOKEN = "test-token";
+  env.POLAR_PRODUCT_ID = "ce7a0a51-0a58-440b-bb50-8dafdefce96d";
+  env.POLAR_SERVER = "production";
+
+  const seen: string[] = [];
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    seen.push(url.replace(/^https:\/\/api\.polar\.sh/, ""));
+    if (url.includes("/v1/customers/")) {
+      return new Response("unauthorized", { status: 401 });
+    }
+    if (url.includes("/v1/orders/") && url.includes("product_id=")) {
+      assert.match(url, /\/v1\/orders\/\?/);
+      return jsonResponse({
+        items: [
+          {
+            id: "cccdb89e-6140-4c5a-b538-72d485124e89",
+            paid: true,
+            status: "paid",
+            product_id: "ce7a0a51-0a58-440b-bb50-8dafdefce96d",
+            customer: { email: "minimonsterlab@gmail.com" },
+          },
+        ],
+      });
+    }
+    return jsonResponse({ items: [] });
+  };
+
+  assert.equal(await emailHasPaidSheetshot("MiniMonsterLab@gmail.com"), true);
+  assert.equal(
+    seen.some((path) => path.startsWith("/v1/customers/?") || path.startsWith("/v1/customers/?email=")),
+    true,
+  );
+  assert.equal(
+    seen.some((path) => path.includes("/v1/orders/?") && path.includes("product_id=")),
+    true,
+  );
+});
+
+test("email-only entitlement scans recent orders when product_id list is empty", async () => {
+  env.POLAR_ACCESS_TOKEN = "test-token";
+  env.POLAR_PRODUCT_ID = "ce7a0a51-0a58-440b-bb50-8dafdefce96d";
+  env.POLAR_SERVER = "sandbox";
+
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    if (url.includes("/v1/customers/")) {
+      return jsonResponse({ items: [] });
+    }
+    if (url.includes("/v1/orders/") && url.includes("product_id=")) {
+      return jsonResponse({ items: [] });
+    }
+    if (url.includes("/v1/orders/")) {
+      return jsonResponse({
+        data: [
+          {
+            paid: true,
+            product: { id: "ce7a0a51-0a58-440b-bb50-8dafdefce96d" },
+            customerEmail: "minimonsterlab@gmail.com",
+          },
+        ],
+      });
+    }
+    return jsonResponse({ items: [] });
+  };
+
+  assert.equal(await emailHasPaidSheetshot("minimonsterlab@gmail.com"), true);
+});
+
+test("email-only entitlement does not grant a paid order for a different email", async () => {
+  env.POLAR_ACCESS_TOKEN = "test-token";
+  env.POLAR_PRODUCT_ID = "ce7a0a51-0a58-440b-bb50-8dafdefce96d";
+  env.POLAR_SERVER = "sandbox";
+
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    if (url.includes("/v1/orders/")) {
+      return jsonResponse({
+        items: [
+          {
+            paid: true,
+            product_id: "ce7a0a51-0a58-440b-bb50-8dafdefce96d",
+            customer: { email: "minimonsterlab@gmail.com" },
+          },
+        ],
+      });
+    }
+    return jsonResponse({ items: [] });
+  };
+
+  assert.equal(await emailHasPaidSheetshot("someone.else@gmail.com"), false);
 });
 
