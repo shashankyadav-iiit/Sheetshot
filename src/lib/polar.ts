@@ -28,15 +28,36 @@ function stringOrNull(value: unknown): string | null {
   return trimmed ? trimmed : null;
 }
 
-/** Email from Polar checkout/order payloads (snake_case, camelCase, nested customer). */
-export function polarEmail(value: unknown): string | null {
+function emailish(value: unknown): string | null {
+  const text = stringOrNull(value);
+  return text && text.includes("@") ? text : null;
+}
+
+/** Email from Polar checkout/order payloads (snake_case, camelCase, nested customer/user). */
+export function polarEmail(value: unknown, depth = 0): string | null {
+  if (depth > 4) return null;
   const rec = asRecord(value);
-  if (!rec) return null;
-  for (const candidate of [rec.customer_email, rec.customerEmail, rec.email]) {
-    const email = stringOrNull(candidate);
+  if (!rec) return emailish(value);
+  for (const key of ["customer_email", "customerEmail", "billing_email", "billingEmail", "email"]) {
+    const email = emailish(rec[key]);
     if (email) return email;
   }
-  return polarEmail(rec.customer);
+  for (const nested of [rec.customer, rec.user, rec.buyer, rec.account]) {
+    const email = polarEmail(nested, depth + 1);
+    if (email) return email;
+  }
+  return null;
+}
+
+export function orderCustomerId(value: unknown): string | null {
+  const rec = asRecord(value);
+  if (!rec) return null;
+  const direct = stringOrNull(rec.customer_id) ?? stringOrNull(rec.customerId);
+  if (direct && !direct.includes("@")) return direct;
+  const customer = rec.customer;
+  if (typeof customer === "string" && !customer.includes("@")) return customer.trim();
+  const nestedId = stringOrNull(asRecord(customer)?.id);
+  return nestedId && !nestedId.includes("@") ? nestedId : null;
 }
 
 function addProductId(value: unknown, into: Set<string>): void {
@@ -85,15 +106,19 @@ export function checkoutStatusPaid(status: string | null | undefined): boolean {
 }
 
 export type PolarOrderLike = {
+  id?: string | null;
   paid?: boolean;
   status?: string;
   product_id?: string | null;
   productId?: string | null;
   product?: { id?: string | null } | string | null;
   products?: Array<{ id?: string } | string> | null;
-  customer?: { email?: string | null } | null;
+  customer_id?: string | null;
+  customerId?: string | null;
+  customer?: { id?: string | null; email?: string | null } | string | null;
   customer_email?: string | null;
   customerEmail?: string | null;
+  user?: { email?: string | null } | null;
 };
 
 export function orderGrantsLifetime(order: PolarOrderLike, productId: string): boolean {
@@ -197,26 +222,94 @@ function orderPaidForEmail(order: PolarOrderLike, email: string, productId: stri
   return orderGrantsLifetime(order, productId) && emailsMatch(polarEmail(order), email);
 }
 
-async function paidProductOrdersForEmail(email: string, productId: string): Promise<boolean> {
-  const byProduct = await polarGet<unknown>(
-    polarCollectionPath("orders", {
-      product_id: productId,
-      limit: 100,
-      sorting: "-created_at",
-    }),
-  );
-  const productItems = polarListItems<PolarOrderLike>(byProduct);
-  if (productItems.some((order) => orderPaidForEmail(order, email, productId))) return true;
+function orderPaidForSession(
+  order: PolarOrderLike,
+  email: string,
+  productId: string,
+  customerIds: Set<string>,
+): boolean {
+  if (!orderGrantsLifetime(order, productId)) return false;
+  if (emailsMatch(polarEmail(order), email)) return true;
+  const customerId = orderCustomerId(order);
+  return Boolean(customerId && customerIds.has(customerId));
+}
 
-  // Filter shape may 401/404 or return empty; scan recent org orders with orders:read only.
-  if (byProduct == null || productItems.length === 0) {
-    const recent = await polarGet<unknown>(
-      polarCollectionPath("orders", { limit: 100, sorting: "-created_at" }),
-    );
-    return polarListItems<PolarOrderLike>(recent).some((order) =>
-      orderPaidForEmail(order, email, productId),
-    );
+async function hydratePaidOrders(
+  orders: PolarOrderLike[],
+  productId: string,
+): Promise<PolarOrderLike[]> {
+  const ids = [
+    ...new Set(
+      orders
+        .filter((order) => orderGrantsLifetime(order, productId) && !polarEmail(order))
+        .map((order) => stringOrNull(asRecord(order)?.id))
+        .filter((id): id is string => Boolean(id)),
+    ),
+  ].slice(0, 5);
+  if (ids.length === 0) return [];
+  const full = await Promise.all(
+    ids.map((id) => polarGet<PolarOrderLike>(`/v1/orders/${encodeURIComponent(id)}`)),
+  );
+  return full.filter((order): order is PolarOrderLike => Boolean(order));
+}
+
+async function emailOnlyHasPaidSheetshot(email: string, productId: string): Promise<boolean> {
+  const [customers, searched, byProduct, recent] = await Promise.all([
+    polarGet<unknown>(polarCollectionPath("customers", { email, limit: 10 })),
+    polarGet<unknown>(polarCollectionPath("customers", { query: email, limit: 10 })),
+    polarGet<unknown>(
+      polarCollectionPath("orders", {
+        product_id: productId,
+        limit: 100,
+        sorting: "-created_at",
+      }),
+    ),
+    polarGet<unknown>(polarCollectionPath("orders", { limit: 100, sorting: "-created_at" })),
+  ]);
+
+  const customerIds = new Set(
+    [
+      ...polarListItems<{ id?: string; email?: string }>(customers),
+      ...polarListItems<{ id?: string; email?: string }>(searched),
+    ]
+      .filter((item) => item.id && emailsMatch(item.email, email))
+      .map((item) => item.id as string),
+  );
+
+  const listed = [
+    ...polarListItems<PolarOrderLike>(byProduct),
+    ...polarListItems<PolarOrderLike>(recent),
+  ];
+  if (listed.some((order) => orderPaidForSession(order, email, productId, customerIds))) {
+    return true;
   }
+
+  const hydrated = await hydratePaidOrders(listed, productId);
+  if (hydrated.some((order) => orderPaidForSession(order, email, productId, customerIds))) {
+    return true;
+  }
+
+  if (customerIds.size > 0) {
+    const byCustomer = await Promise.all(
+      [...customerIds].map((customerId) =>
+        polarGet<unknown>(
+          polarCollectionPath("orders", {
+            customer_id: customerId,
+            product_id: productId,
+            limit: 50,
+          }),
+        ),
+      ),
+    );
+    if (
+      byCustomer.some((body) =>
+        polarListItems<PolarOrderLike>(body).some((order) => orderGrantsLifetime(order, productId)),
+      )
+    ) {
+      return true;
+    }
+  }
+
   return false;
 }
 
@@ -256,26 +349,5 @@ export async function emailHasPaidSheetshot(
     if (paidOrderForSession) return true;
   }
 
-  const [customers, searched] = await Promise.all([
-    polarGet<unknown>(polarCollectionPath("customers", { email: normalized, limit: 10 })),
-    polarGet<unknown>(polarCollectionPath("customers", { query: normalized, limit: 10 })),
-  ]);
-  const customer = [
-    ...polarListItems<{ id?: string; email?: string }>(customers),
-    ...polarListItems<{ id?: string; email?: string }>(searched),
-  ].find((item) => emailsMatch(item.email, normalized));
-  if (customer?.id) {
-    const byCustomer = await polarGet<unknown>(
-      polarCollectionPath("orders", {
-        customer_id: customer.id,
-        product_id: productId,
-        limit: 50,
-      }),
-    );
-    if (polarListItems<PolarOrderLike>(byCustomer).some((order) => orderGrantsLifetime(order, productId))) {
-      return true;
-    }
-  }
-
-  return paidProductOrdersForEmail(normalized, productId);
+  return emailOnlyHasPaidSheetshot(normalized, productId);
 }

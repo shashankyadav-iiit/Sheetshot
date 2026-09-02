@@ -11,6 +11,7 @@ import {
   polarListItems,
   polarProductIds,
   polarServer,
+  orderCustomerId,
 } from "./polar";
 
 const envKeys = ["POLAR_ACCESS_TOKEN", "POLAR_PRODUCT_ID", "POLAR_SERVER"] as const;
@@ -117,6 +118,8 @@ test("polarEmail and polarProductIds read snake_case, camelCase, and nested fiel
   assert.equal(polarEmail({ customer_email: "a@b.com" }), "a@b.com");
   assert.equal(polarEmail({ customerEmail: "a@b.com" }), "a@b.com");
   assert.equal(polarEmail({ customer: { email: "a@b.com" } }), "a@b.com");
+  assert.equal(polarEmail({ user: { email: "a@b.com" } }), "a@b.com");
+  assert.equal(polarEmail({ paid: true, customer_id: "066f321e-cde3-4872-ae9c-9ebc039c9bdf" }), null);
   assert.deepEqual(polarProductIds({ product_id: "prod_1" }), ["prod_1"]);
   assert.deepEqual(polarProductIds({ productId: "prod_1" }), ["prod_1"]);
   assert.deepEqual(polarProductIds({ product: { id: "prod_1" } }), ["prod_1"]);
@@ -344,5 +347,134 @@ test("email-only entitlement does not grant a paid order for a different email",
   };
 
   assert.equal(await emailHasPaidSheetshot("someone.else@gmail.com"), false);
+});
+
+test("product_id list with nested customer.email and no top-level email is paid", async () => {
+  env.POLAR_ACCESS_TOKEN = "test-token";
+  env.POLAR_PRODUCT_ID = "ce7a0a51-0a58-440b-bb50-8dafdefce96d";
+  env.POLAR_SERVER = "sandbox";
+
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    if (url.includes("/v1/customers/")) return jsonResponse({ items: [] });
+    if (url.includes("/v1/orders/") && url.includes("product_id=")) {
+      return jsonResponse({
+        items: [
+          {
+            id: "cccdb89e-6140-4c5a-b538-72d485124e89",
+            paid: true,
+            product_id: "ce7a0a51-0a58-440b-bb50-8dafdefce96d",
+            customer: { email: "minimonsterlab@gmail.com" },
+          },
+        ],
+      });
+    }
+    return jsonResponse({ items: [] });
+  };
+
+  assert.equal(await emailHasPaidSheetshot("minimonsterlab@gmail.com"), true);
+});
+
+test("non-matching product_id list still scans recent orders", async () => {
+  env.POLAR_ACCESS_TOKEN = "test-token";
+  env.POLAR_PRODUCT_ID = "ce7a0a51-0a58-440b-bb50-8dafdefce96d";
+  env.POLAR_SERVER = "sandbox";
+
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    if (url.includes("/v1/customers/")) return jsonResponse({ items: [] });
+    if (url.includes("/v1/orders/") && url.includes("product_id=")) {
+      return jsonResponse({
+        items: [
+          {
+            paid: true,
+            product_id: "ce7a0a51-0a58-440b-bb50-8dafdefce96d",
+            customer: { email: "someone.else@gmail.com" },
+          },
+        ],
+      });
+    }
+    if (url.includes("/v1/orders/?")) {
+      return jsonResponse({
+        items: [
+          {
+            paid: true,
+            product_id: "ce7a0a51-0a58-440b-bb50-8dafdefce96d",
+            customer: { email: "minimonsterlab@gmail.com" },
+          },
+        ],
+      });
+    }
+    return jsonResponse({ items: [] });
+  };
+
+  assert.equal(await emailHasPaidSheetshot("minimonsterlab@gmail.com"), true);
+});
+
+test("paid product order with only customer_id matches after customers email lookup", async () => {
+  env.POLAR_ACCESS_TOKEN = "test-token";
+  env.POLAR_PRODUCT_ID = "ce7a0a51-0a58-440b-bb50-8dafdefce96d";
+  env.POLAR_SERVER = "sandbox";
+
+  const customerId = "066f321e-cde3-4872-ae9c-9ebc039c9bdf";
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    if (url.includes("/v1/customers/")) {
+      return jsonResponse({
+        items: [{ id: customerId, email: "minimonsterlab@gmail.com" }],
+      });
+    }
+    if (url.includes("/v1/orders/") && url.includes("product_id=")) {
+      return jsonResponse({
+        items: [
+          {
+            id: "cccdb89e-6140-4c5a-b538-72d485124e89",
+            paid: true,
+            product_id: "ce7a0a51-0a58-440b-bb50-8dafdefce96d",
+            customer_id: customerId,
+          },
+        ],
+      });
+    }
+    return jsonResponse({ items: [] });
+  };
+
+  assert.equal(orderCustomerId({ customer_id: customerId }), customerId);
+  assert.equal(await emailHasPaidSheetshot("minimonsterlab@gmail.com"), true);
+});
+
+test("paid product order without list email is paid after GET /v1/orders/{id}", async () => {
+  env.POLAR_ACCESS_TOKEN = "test-token";
+  env.POLAR_PRODUCT_ID = "ce7a0a51-0a58-440b-bb50-8dafdefce96d";
+  env.POLAR_SERVER = "sandbox";
+
+  const orderId = "cccdb89e-6140-4c5a-b538-72d485124e89";
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    if (url.includes("/v1/customers/")) return new Response("unauthorized", { status: 401 });
+    if (url.includes(`/v1/orders/${orderId}`)) {
+      return jsonResponse({
+        id: orderId,
+        paid: true,
+        product_id: "ce7a0a51-0a58-440b-bb50-8dafdefce96d",
+        customer: { email: "minimonsterlab@gmail.com" },
+      });
+    }
+    if (url.includes("/v1/orders/") && url.includes("product_id=")) {
+      return jsonResponse({
+        items: [
+          {
+            id: orderId,
+            paid: true,
+            product_id: "ce7a0a51-0a58-440b-bb50-8dafdefce96d",
+            customer_id: "066f321e-cde3-4872-ae9c-9ebc039c9bdf",
+          },
+        ],
+      });
+    }
+    return jsonResponse({ items: [] });
+  };
+
+  assert.equal(await emailHasPaidSheetshot("minimonsterlab@gmail.com"), true);
 });
 
