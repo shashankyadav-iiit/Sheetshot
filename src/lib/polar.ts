@@ -145,6 +145,20 @@ export function polarListItems<T>(body: unknown): T[] {
   return [];
 }
 
+/** Polar list endpoints use a trailing slash (`/v1/orders/`, `/v1/customers/`). */
+export function polarCollectionPath(
+  collection: "orders" | "customers",
+  query: Record<string, string | number | undefined> = {},
+): string {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(query)) {
+    if (value == null || value === "") continue;
+    params.set(key, String(value));
+  }
+  const qs = params.toString();
+  return qs ? `/v1/${collection}/?${qs}` : `/v1/${collection}/`;
+}
+
 /** Polar HTTP GET. AbortSignal timeout (~8s); returns null instead of hanging. */
 export async function polarGet<T>(
   path: string,
@@ -183,6 +197,29 @@ function orderPaidForEmail(order: PolarOrderLike, email: string, productId: stri
   return orderGrantsLifetime(order, productId) && emailsMatch(polarEmail(order), email);
 }
 
+async function paidProductOrdersForEmail(email: string, productId: string): Promise<boolean> {
+  const byProduct = await polarGet<unknown>(
+    polarCollectionPath("orders", {
+      product_id: productId,
+      limit: 100,
+      sorting: "-created_at",
+    }),
+  );
+  const productItems = polarListItems<PolarOrderLike>(byProduct);
+  if (productItems.some((order) => orderPaidForEmail(order, email, productId))) return true;
+
+  // Filter shape may 401/404 or return empty; scan recent org orders with orders:read only.
+  if (byProduct == null || productItems.length === 0) {
+    const recent = await polarGet<unknown>(
+      polarCollectionPath("orders", { limit: 100, sorting: "-created_at" }),
+    );
+    return polarListItems<PolarOrderLike>(recent).some((order) =>
+      orderPaidForEmail(order, email, productId),
+    );
+  }
+  return false;
+}
+
 export async function emailHasPaidSheetshot(
   email: string,
   checkoutId?: string | null,
@@ -196,7 +233,7 @@ export async function emailHasPaidSheetshot(
     const id = checkoutId.trim();
     const [checkout, byCheckout] = await Promise.all([
       polarGet<PolarCheckoutLike>(`/v1/checkouts/${encodeURIComponent(id)}`),
-      polarGet<unknown>(`/v1/orders?checkout_id=${encodeURIComponent(id)}&limit=20`),
+      polarGet<unknown>(polarCollectionPath("orders", { checkout_id: id, limit: 20 })),
     ]);
 
     if (checkout && checkoutLooksPaid(checkout, normalized, productId)) return true;
@@ -220,17 +257,25 @@ export async function emailHasPaidSheetshot(
   }
 
   const [customers, searched] = await Promise.all([
-    polarGet<unknown>(`/v1/customers?email=${encodeURIComponent(normalized)}&limit=10`),
-    polarGet<unknown>(`/v1/customers?query=${encodeURIComponent(normalized)}&limit=10`),
+    polarGet<unknown>(polarCollectionPath("customers", { email: normalized, limit: 10 })),
+    polarGet<unknown>(polarCollectionPath("customers", { query: normalized, limit: 10 })),
   ]);
   const customer = [
     ...polarListItems<{ id?: string; email?: string }>(customers),
     ...polarListItems<{ id?: string; email?: string }>(searched),
   ].find((item) => emailsMatch(item.email, normalized));
-  if (!customer?.id) return false;
+  if (customer?.id) {
+    const byCustomer = await polarGet<unknown>(
+      polarCollectionPath("orders", {
+        customer_id: customer.id,
+        product_id: productId,
+        limit: 50,
+      }),
+    );
+    if (polarListItems<PolarOrderLike>(byCustomer).some((order) => orderGrantsLifetime(order, productId))) {
+      return true;
+    }
+  }
 
-  const orders = await polarGet<unknown>(
-    `/v1/orders?customer_id=${encodeURIComponent(customer.id)}&product_id=${encodeURIComponent(productId)}&limit=50`,
-  );
-  return polarListItems<PolarOrderLike>(orders).some((order) => orderGrantsLifetime(order, productId));
+  return paidProductOrdersForEmail(normalized, productId);
 }
