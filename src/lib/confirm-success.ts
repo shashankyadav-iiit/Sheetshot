@@ -33,6 +33,7 @@ export async function confirmPolarEntitlement(options: {
         ? `/api/entitlement?checkout_id=${encodeURIComponent(options.checkoutId)}`
         : "/api/entitlement";
       const res = await fetchImpl(url, { cache: "no-store" });
+      if (options.shouldStop?.()) return last;
       if (!res.ok) {
         last = { state: "error", email: last.state === "unpaid" ? last.email : null };
       } else {
@@ -56,4 +57,28 @@ export function refreshSessionInBackground(update: () => Promise<unknown>): void
   void Promise.resolve()
     .then(() => update())
     .catch(() => {});
+}
+
+export type ConfirmGuard = { current: boolean };
+
+/**
+ * Start one entitlement confirm. `guard` only blocks overlapping runs.
+ *
+ * Cleanup MUST set cancelled and clear the guard. If cleanup only cancelled
+ * the in-flight poll and left `guard.current === true`, a remount (React
+ * Strict Mode) or a restarted effect would skip starting again and the UI
+ * would stay on Confirming forever.
+ */
+export function beginConfirmRun(
+  guard: ConfirmGuard,
+  start: (cancelled: () => boolean) => void,
+): () => void {
+  if (guard.current) return () => {};
+  guard.current = true;
+  let cancelled = false;
+  start(() => cancelled);
+  return () => {
+    cancelled = true;
+    guard.current = false;
+  };
 }
