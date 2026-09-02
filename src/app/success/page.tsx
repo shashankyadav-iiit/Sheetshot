@@ -5,7 +5,11 @@ import { Suspense, useEffect, useRef, useState } from "react";
 import { useSession } from "next-auth/react";
 import { useSearchParams } from "next/navigation";
 import { Header } from "@/components/Header";
-import { confirmPolarEntitlement, refreshSessionInBackground } from "@/lib/confirm-success";
+import {
+  beginConfirmRun,
+  confirmPolarEntitlement,
+  refreshSessionInBackground,
+} from "@/lib/confirm-success";
 import { startGoogleSignIn } from "@/lib/start-google-sign-in";
 
 function SuccessBody() {
@@ -15,34 +19,35 @@ function SuccessBody() {
   const [state, setState] = useState<"loading" | "paid" | "unpaid" | "error">("loading");
   const [email, setEmail] = useState<string | null>(null);
   const checked = useRef(false);
+  const updateRef = useRef(update);
+
+  useEffect(() => {
+    updateRef.current = update;
+  }, [update]);
 
   useEffect(() => {
     if (status !== "authenticated") return;
-    if (checked.current) return;
-    checked.current = true;
-
-    let cancelled = false;
-    const run = async () => {
-      const outcome = await confirmPolarEntitlement({
-        checkoutId,
-        shouldStop: () => cancelled,
-      });
-      if (cancelled) return;
-      setEmail(outcome.email);
-      if (outcome.state === "paid") {
-        // Never block Unlocked on next-auth session.update() — it can hang on Polar.
-        setState("paid");
-        window.dispatchEvent(new Event("sheetshot-entitlement"));
-        refreshSessionInBackground(update);
-        return;
-      }
-      setState(outcome.state);
-    };
-    void run();
-    return () => {
-      cancelled = true;
-    };
-  }, [status, checkoutId, update]);
+    return beginConfirmRun(checked, (cancelled) => {
+      void (async () => {
+        const outcome = await confirmPolarEntitlement({
+          checkoutId,
+          shouldStop: cancelled,
+        });
+        if (cancelled()) return;
+        setEmail(outcome.email);
+        if (outcome.state === "paid") {
+          // Never block Unlocked on next-auth session.update() — it can hang on Polar.
+          setState("paid");
+          window.dispatchEvent(new Event("sheetshot-entitlement"));
+          refreshSessionInBackground(() => updateRef.current());
+          return;
+        }
+        setState(outcome.state);
+      })();
+    });
+    // `update` lives in a ref so identity changes from useSession do not remount
+    // this effect. Cleanup clears `checked` so Strict Mode remounts poll again.
+  }, [status, checkoutId]);
 
   const callbackUrl = checkoutId
     ? `/success?checkout_id=${encodeURIComponent(checkoutId)}`
