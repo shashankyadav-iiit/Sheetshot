@@ -1,20 +1,27 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState, type ClipboardEvent } from "react";
+import { suggestedHeaderMerges } from "@/lib/cell-quality";
 import { CellZoom } from "./CellZoom";
 import {
   addColumn,
   addColumnMeta,
   addRow,
   addRowMeta,
+  canMergeCells,
+  canSplitCell,
   deleteColumn,
   deleteColumnMeta,
   deleteRow,
   deleteRowMeta,
   markCellReviewed,
+  mergeCells,
   metaGridFor,
+  resolveMergePair,
   setCell,
+  splitCell,
   type CellMeta,
+  type CellPos,
 } from "@/lib/grid";
 
 function colLabel(index: number): string {
@@ -66,10 +73,12 @@ export function Spreadsheet({
   const rootRef = useRef<HTMLDivElement>(null);
   const inputRefs = useRef(new Map<string, HTMLInputElement>());
   const meta = alignedMeta(cells, metaProp);
-  const [focus, setFocus] = useState<{ r: number; c: number } | null>(null);
+  const [focus, setFocus] = useState<CellPos | null>(null);
+  const [other, setOther] = useState<CellPos | null>(null);
+  const [caret, setCaret] = useState<number | null>(null);
 
   const flagged = useMemo(() => {
-    const list: { r: number; c: number }[] = [];
+    const list: CellPos[] = [];
     meta.forEach((row, r) => {
       row.forEach((cell, c) => {
         if (cell.shaky) list.push({ r, c });
@@ -77,6 +86,17 @@ export function Spreadsheet({
     });
     return list;
   }, [meta]);
+
+  const suggestedMerges = useMemo(() => suggestedHeaderMerges(meta), [meta]);
+
+  const mergePair = useMemo(
+    () => resolveMergePair(cells, focus, other, suggestedMerges),
+    [cells, focus, other, suggestedMerges],
+  );
+  const mergeEnabled = Boolean(mergePair && canMergeCells(cells, mergePair[0], mergePair[1]));
+  const splitEnabled = Boolean(
+    focus && canSplitCell(cells[focus.r]?.[focus.c] ?? "", caret),
+  );
 
   const focusedMeta = focus ? meta[focus.r]?.[focus.c] : undefined;
   const focusedLabel = focus ? `${colLabel(focus.c)}${focus.r + 1}` : "";
@@ -101,6 +121,37 @@ export function Spreadsheet({
     };
   }, [locked]);
 
+  const applyMerge = (a?: CellPos, b?: CellPos) => {
+    if (locked) return;
+    const pair = a && b ? ([a, b] as [CellPos, CellPos]) : mergePair;
+    if (!pair) return;
+    const result = mergeCells(cells, meta, pair[0], pair[1]);
+    if (!result) return;
+    onChange(result.cells, result.meta);
+    setFocus(result.focus);
+    setOther(null);
+    setCaret((result.cells[result.focus.r]?.[result.focus.c] ?? "").length);
+    queueMicrotask(() => inputRefs.current.get(`${result.focus.r}:${result.focus.c}`)?.focus());
+  };
+
+  const applySplit = () => {
+    if (locked || !focus) return;
+    const input = inputRefs.current.get(`${focus.r}:${focus.c}`);
+    const at = input?.selectionStart ?? caret;
+    const result = splitCell(cells, meta, focus, at);
+    if (!result) return;
+    onChange(result.cells, result.meta);
+    setOther(null);
+    setFocus(result.focus);
+    setCaret((result.cells[result.focus.r]?.[result.focus.c] ?? "").length);
+    queueMicrotask(() => inputRefs.current.get(`${result.focus.r}:${result.focus.c}`)?.focus());
+  };
+
+  const applyMergeRef = useRef(applyMerge);
+  const applySplitRef = useRef(applySplit);
+  applyMergeRef.current = applyMerge;
+  applySplitRef.current = applySplit;
+
   const jumpFlagged = (delta: number) => {
     if (flagged.length === 0) return;
     const current = focus
@@ -108,9 +159,26 @@ export function Spreadsheet({
       : -1;
     const next = flagged[(current + delta + flagged.length) % flagged.length]!;
     setFocus(next);
+    setOther(null);
     const key = `${next.r}:${next.c}`;
     inputRefs.current.get(key)?.focus();
   };
+
+  useEffect(() => {
+    if (locked) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (!e.ctrlKey || e.metaKey || e.altKey) return;
+      if (e.key !== "m" && e.key !== "M") return;
+      const root = rootRef.current;
+      const active = document.activeElement;
+      if (!root || !active || !root.contains(active)) return;
+      e.preventDefault();
+      if (e.shiftKey) applySplitRef.current();
+      else applyMergeRef.current();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [locked]);
 
   return (
     <div
@@ -143,6 +211,26 @@ export function Spreadsheet({
             >
               + Column
             </button>
+            <button
+              type="button"
+              disabled={!mergeEnabled}
+              title="Merge adjacent cells (Ctrl+M)"
+              aria-keyshortcuts="Control+M"
+              className="rounded-md border border-line px-2 py-1 hover:bg-paper disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
+              onClick={() => applyMerge()}
+            >
+              Merge
+            </button>
+            <button
+              type="button"
+              disabled={!splitEnabled}
+              title="Split cell at caret or space (Ctrl+Shift+M)"
+              aria-keyshortcuts="Control+Shift+M"
+              className="rounded-md border border-line px-2 py-1 hover:bg-paper disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
+              onClick={applySplit}
+            >
+              Split
+            </button>
           </>
         )}
         {flagged.length > 0 && (
@@ -157,6 +245,16 @@ export function Spreadsheet({
             >
               Next
             </button>
+            {!locked && suggestedMerges[0] && (
+              <button
+                type="button"
+                aria-label="Merge split header cells"
+                className="rounded-md border border-warn/30 px-2 py-1 hover:bg-warn-soft"
+                onClick={() => applyMerge(suggestedMerges[0]!.a, suggestedMerges[0]!.b)}
+              >
+                Merge these?
+              </button>
+            )}
           </span>
         )}
         <span className="ml-auto font-mono text-faint">
@@ -262,7 +360,8 @@ export function Spreadsheet({
                 {row.map((cell, c) => {
                   const info = meta[r]?.[c];
                   const shaky = Boolean(info?.shaky);
-                  const selected = focus?.r === r && focus?.c === c;
+                  const selected =
+                    (focus?.r === r && focus?.c === c) || (other?.r === r && other?.c === c);
                   return (
                     <td
                       key={c}
@@ -293,10 +392,25 @@ export function Spreadsheet({
                           aria-label={`${colLabel(c)}${r + 1}`}
                           aria-invalid={shaky || undefined}
                           title={info?.reasons.join(" · ") || undefined}
-                          onFocus={() => setFocus({ r, c })}
-                          onChange={(e) =>
-                            onChange(setCell(cells, r, c, e.target.value), markCellReviewed(meta, r, c))
-                          }
+                          onMouseDown={(e) => {
+                            if (e.shiftKey && focus && (focus.r !== r || focus.c !== c)) {
+                              setOther({ r, c });
+                              e.preventDefault();
+                              return;
+                            }
+                            setOther(null);
+                          }}
+                          onFocus={(e) => {
+                            setFocus({ r, c });
+                            setCaret(e.currentTarget.selectionStart);
+                          }}
+                          onSelect={(e) => setCaret(e.currentTarget.selectionStart)}
+                          onKeyUp={(e) => setCaret(e.currentTarget.selectionStart)}
+                          onClick={(e) => setCaret(e.currentTarget.selectionStart)}
+                          onChange={(e) => {
+                            setCaret(e.currentTarget.selectionStart);
+                            onChange(setCell(cells, r, c, e.target.value), markCellReviewed(meta, r, c));
+                          }}
                           className="h-9 w-full min-w-[7.5rem] bg-transparent px-2 text-ink outline-none focus:bg-accent-soft/40"
                         />
                       )}

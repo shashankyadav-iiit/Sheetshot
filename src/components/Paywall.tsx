@@ -45,6 +45,9 @@ export function Paywall({ open, onClose, onUnlocked }: PaywallProps) {
           Sign in with Google, then pay once on Polar. Lifetime follows that Google account on any
           device. OCR still runs on your machine.
         </p>
+        <p className="mt-2 text-sm leading-6 text-muted">
+          Fix the highlighted / split cells, then unlock unlimited exports.
+        </p>
         <div className="mt-6 flex flex-col gap-2">
           <button
             type="button"

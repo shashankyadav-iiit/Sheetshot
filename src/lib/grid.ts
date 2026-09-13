@@ -3,6 +3,14 @@ import { joinTokens, looksNumericToken, shouldGlueTokens } from "./numbers";
 
 export type BBox = { x0: number; y0: number; x1: number; y1: number };
 
+export type CellPos = { r: number; c: number };
+
+export type GridMutation = {
+  cells: string[][];
+  meta: CellMeta[][];
+  focus: CellPos;
+};
+
 export type OcrWord = {
   text: string;
   confidence: number;
@@ -69,8 +77,9 @@ function isRuleToken(w: OcrWord): boolean {
   return false;
 }
 
-function unionBBox(a: BBox | null, b: BBox): BBox {
-  if (!a) return { ...b };
+export function unionBBox(a: BBox | null, b: BBox | null): BBox | null {
+  if (!a) return b ? { ...b } : null;
+  if (!b) return { ...a };
   return {
     x0: Math.min(a.x0, b.x0),
     y0: Math.min(a.y0, b.y0),
@@ -375,4 +384,222 @@ export function markCellReviewed(meta: CellMeta[][], r: number, c: number): Cell
       ? row.map((cell, j) => (j === c ? { ...cell, shaky: false, reasons: [] } : cell))
       : [...row],
   );
+}
+
+export function reassessGrid(cells: string[][], meta: CellMeta[][]): CellMeta[][] {
+  const confidences = cells.map((row, r) =>
+    row.map((text, c) => meta[r]?.[c]?.confidence ?? (text.trim() ? 0 : 100)),
+  );
+  const bboxes = cells.map((row, r) => row.map((_, c) => meta[r]?.[c]?.bbox ?? null));
+  return assessGrid(cells, confidences, bboxes);
+}
+
+export function areAdjacent(a: CellPos, b: CellPos): boolean {
+  const dr = Math.abs(a.r - b.r);
+  const dc = Math.abs(a.c - b.c);
+  return (dr === 1 && dc === 0) || (dr === 0 && dc === 1);
+}
+
+export function orderCells(a: CellPos, b: CellPos): [CellPos, CellPos] {
+  if (a.r === b.r) return a.c <= b.c ? [a, b] : [b, a];
+  return a.r <= b.r ? [a, b] : [b, a];
+}
+
+function cellInBounds(cells: string[][], pos: CellPos): boolean {
+  return cells[pos.r]?.[pos.c] !== undefined;
+}
+
+function columnIsEmpty(cells: string[][], col: number): boolean {
+  return cells.every((row) => !(row[col] ?? "").trim());
+}
+
+function rowIsEmpty(cells: string[][], row: number): boolean {
+  return !(cells[row] ?? []).some((cell) => cell.trim());
+}
+
+/** Gap / em used by shouldGlueTokens, derived from bboxes when both cells have them. */
+export function cellJoinMetrics(
+  leftBox: BBox | null,
+  rightBox: BBox | null,
+  vertical = false,
+): { gap: number; em: number } {
+  if (leftBox && rightBox) {
+    const gap = vertical
+      ? Math.max(0, rightBox.y0 - leftBox.y1)
+      : Math.max(0, rightBox.x0 - leftBox.x1);
+    const em = vertical
+      ? Math.max(1, (leftBox.x1 - leftBox.x0 + (rightBox.x1 - rightBox.x0)) / 2)
+      : Math.max(1, (leftBox.y1 - leftBox.y0 + (rightBox.y1 - rightBox.y0)) / 2);
+    return { gap, em };
+  }
+  // No pixel gap: treat as tightly neighboring OCR fragments.
+  return { gap: 0, em: 12 };
+}
+
+export function joinAdjacentCellText(
+  left: string,
+  right: string,
+  leftBox: BBox | null,
+  rightBox: BBox | null,
+  vertical = false,
+): string {
+  const { gap, em } = cellJoinMetrics(leftBox, rightBox, vertical);
+  return joinTokens(left, right, shouldGlueTokens(left, right, gap, em));
+}
+
+export function resolveMergePair(
+  cells: string[][],
+  focus: CellPos | null,
+  other?: CellPos | null,
+  suggested?: { a: CellPos; b: CellPos }[],
+): [CellPos, CellPos] | null {
+  if (!focus || !cellInBounds(cells, focus)) return null;
+  if (other && cellInBounds(cells, other)) {
+    return areAdjacent(focus, other) ? orderCells(focus, other) : null;
+  }
+  const hit = suggested?.find(
+    (pair) =>
+      (pair.a.r === focus.r && pair.a.c === focus.c) ||
+      (pair.b.r === focus.r && pair.b.c === focus.c),
+  );
+  if (hit && canMergeCells(cells, hit.a, hit.b)) return [hit.a, hit.b];
+  const right = { r: focus.r, c: focus.c + 1 };
+  if (cellInBounds(cells, right)) return [focus, right];
+  const down = { r: focus.r + 1, c: focus.c };
+  if (cellInBounds(cells, down)) return [focus, down];
+  return null;
+}
+
+export function canMergeCells(cells: string[][], a: CellPos, b: CellPos): boolean {
+  if (!areAdjacent(a, b) || !cellInBounds(cells, a) || !cellInBounds(cells, b)) return false;
+  return Boolean(cells[a.r]![a.c]!.trim() || cells[b.r]![b.c]!.trim());
+}
+
+function splitBBox(bbox: BBox | null, vertical: boolean): [BBox | null, BBox | null] {
+  if (!bbox) return [null, null];
+  if (vertical) {
+    const mid = (bbox.y0 + bbox.y1) / 2;
+    return [
+      { ...bbox, y1: mid },
+      { ...bbox, y0: mid },
+    ];
+  }
+  const mid = (bbox.x0 + bbox.x1) / 2;
+  return [
+    { ...bbox, x1: mid },
+    { ...bbox, x0: mid },
+  ];
+}
+
+/** Split at caret, or on the first whitespace run when caret is not inside the text. */
+export function splitCellText(text: string, caret?: number | null): [string, string] | null {
+  if (caret != null && caret > 0 && caret < text.length) {
+    const left = text.slice(0, caret).trimEnd();
+    const right = text.slice(caret).trimStart();
+    if (!left || !right) return null;
+    return [left, right];
+  }
+  const match = /^(\S+)\s+(\S[\s\S]*)$/.exec(text.trim());
+  if (!match) return null;
+  return [match[1]!, match[2]!.trim()];
+}
+
+export function canSplitCell(text: string, caret?: number | null): boolean {
+  return splitCellText(text, caret) !== null;
+}
+
+export function mergeCells(
+  cells: string[][],
+  meta: CellMeta[][],
+  a: CellPos,
+  b: CellPos,
+): GridMutation | null {
+  if (!canMergeCells(cells, a, b)) return null;
+
+  const [keep, drop] = orderCells(a, b);
+  const vertical = keep.c === drop.c;
+  const keepMeta = meta[keep.r]?.[keep.c] ?? emptyCellMeta();
+  const dropMeta = meta[drop.r]?.[drop.c] ?? emptyCellMeta();
+  const text = joinAdjacentCellText(
+    cells[keep.r]![keep.c]!,
+    cells[drop.r]![drop.c]!,
+    keepMeta.bbox,
+    dropMeta.bbox,
+    vertical,
+  );
+
+  let nextCells = setCell(setCell(cells, keep.r, keep.c, text), drop.r, drop.c, "");
+  let nextMeta = meta.map((row, r) =>
+    row.map((cell, c) => {
+      if (r === keep.r && c === keep.c) {
+        return {
+          ...cell,
+          confidence: Math.min(keepMeta.confidence, dropMeta.confidence),
+          bbox: unionBBox(keepMeta.bbox, dropMeta.bbox),
+        };
+      }
+      if (r === drop.r && c === drop.c) return emptyCellMeta();
+      return cell;
+    }),
+  );
+
+  if (!vertical && columnIsEmpty(nextCells, drop.c)) {
+    nextCells = deleteColumn(nextCells, drop.c);
+    nextMeta = deleteColumnMeta(nextMeta, drop.c);
+  } else if (vertical && rowIsEmpty(nextCells, drop.r)) {
+    nextCells = deleteRow(nextCells, drop.r);
+    nextMeta = deleteRowMeta(nextMeta, drop.r);
+  }
+
+  return {
+    cells: nextCells,
+    meta: reassessGrid(nextCells, nextMeta),
+    focus: keep,
+  };
+}
+
+export function splitCell(
+  cells: string[][],
+  meta: CellMeta[][],
+  pos: CellPos,
+  caret?: number | null,
+): GridMutation | null {
+  if (!cellInBounds(cells, pos)) return null;
+  const parts = splitCellText(cells[pos.r]![pos.c]!, caret);
+  if (!parts) return null;
+  const [left, right] = parts;
+
+  const neighborCol = pos.c + 1;
+  const neighborText = cells[pos.r]?.[neighborCol];
+  const insert = neighborText === undefined || neighborText.trim().length > 0;
+
+  let nextCells = cells;
+  let nextMeta = meta;
+  if (insert) {
+    nextCells = addColumn(nextCells, neighborCol);
+    nextMeta = addColumnMeta(nextMeta, neighborCol);
+  }
+
+  const dest = { r: pos.r, c: neighborCol };
+  nextCells = setCell(setCell(nextCells, pos.r, pos.c, left), dest.r, dest.c, right);
+
+  const srcMeta = meta[pos.r]?.[pos.c] ?? emptyCellMeta();
+  const [leftBox, rightBox] = splitBBox(srcMeta.bbox, false);
+  nextMeta = nextMeta.map((row, r) =>
+    row.map((cell, c) => {
+      if (r === pos.r && c === pos.c) {
+        return { ...cell, confidence: srcMeta.confidence, bbox: leftBox };
+      }
+      if (r === dest.r && c === dest.c) {
+        return { ...emptyCellMeta(), confidence: srcMeta.confidence, bbox: rightBox };
+      }
+      return cell;
+    }),
+  );
+
+  return {
+    cells: nextCells,
+    meta: reassessGrid(nextCells, nextMeta),
+    focus: pos,
+  };
 }

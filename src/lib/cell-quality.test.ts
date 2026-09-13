@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { assessGrid, LOW_CONFIDENCE } from "./cell-quality";
+import { assessGrid, LOW_CONFIDENCE, suggestedHeaderMerges } from "./cell-quality";
 
 test("low Tesseract confidence flags a cell", () => {
   const meta = assessGrid(
@@ -80,6 +80,11 @@ test("split header fragments are flagged; intact headers are not", () => {
   );
   assert.equal(intact[0]?.[0]?.shaky, false);
   assert.equal(intact[0]?.[1]?.shaky, false);
+
+  const pairs = suggestedHeaderMerges(split);
+  assert.equal(pairs.length, 1);
+  assert.deepEqual(pairs[0], { a: { r: 0, c: 0 }, b: { r: 0, c: 1 } });
+  assert.equal(suggestedHeaderMerges(intact).length, 0);
 });
 
 test("clean numeric cells are not flagged", () => {
