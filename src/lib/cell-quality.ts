@@ -1,7 +1,8 @@
-import type { BBox, CellMeta } from "./grid";
+import type { BBox, CellMeta, CellPos } from "./grid";
 import { looksNumericToken } from "./numbers";
 
 export const LOW_CONFIDENCE = 70;
+export const SPLIT_HEADER_REASON = "Header may be split across cells";
 
 function looksLikeOcrNumber(text: string): boolean {
   const t = text.trim();
@@ -87,11 +88,29 @@ function assessCell(
       (prev && looksSplitHeaderPair(prev, text)) ||
       (next && looksSplitHeaderPair(text, next))
     ) {
-      reasons.push("Header may be split across cells");
+      reasons.push(SPLIT_HEADER_REASON);
     }
   }
 
   return reasons;
+}
+
+/** Adjacent header cells that both look like a split word, e.g. "Am" + "ount". */
+export function suggestedHeaderMerges(meta: CellMeta[][]): { a: CellPos; b: CellPos }[] {
+  const header = meta[0];
+  if (!header || meta.length < 2) return [];
+  const pairs: { a: CellPos; b: CellPos }[] = [];
+  for (let c = 0; c < header.length - 1; c++) {
+    const left = header[c];
+    const right = header[c + 1];
+    if (
+      left?.reasons.includes(SPLIT_HEADER_REASON) &&
+      right?.reasons.includes(SPLIT_HEADER_REASON)
+    ) {
+      pairs.push({ a: { r: 0, c }, b: { r: 0, c: c + 1 } });
+    }
+  }
+  return pairs;
 }
 
 export function assessGrid(
