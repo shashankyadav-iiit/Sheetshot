@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { ConverterLinks } from "@/components/ConverterLinks";
 import { Header } from "@/components/Header";
 import { LandingHero } from "@/components/LandingHero";
 import { Logo } from "@/components/Logo";
@@ -107,6 +108,9 @@ export default function HomePage() {
         <div className="mx-auto flex max-w-6xl flex-col gap-3 px-4 py-8 text-sm text-muted sm:flex-row sm:items-center sm:justify-between sm:px-6">
           <Logo size="sm" />
           <p>{TAGLINE}</p>
+        </div>
+        <div className="mx-auto max-w-6xl px-4 pb-8 sm:px-6">
+          <ConverterLinks />
         </div>
       </footer>
     </>
