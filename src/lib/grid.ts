@@ -227,7 +227,195 @@ function accToMeta(grid: AccCell[][]): { cells: string[][]; meta: CellMeta[][] }
   return { cells, meta: assessGrid(cells, confidences, bboxes) };
 }
 
-export function reconstructGrid(words: OcrWord[]): GridResult {
+export type TableRules = {
+  /** y centers of horizontal rules in the same pixel space as the word boxes. */
+  rows: number[];
+  /** x centers of vertical rules in the same pixel space as the word boxes. */
+  cols: number[];
+};
+
+export type ReconstructOptions = {
+  rules?: TableRules | null;
+};
+
+/** Join words of one visual line left to right, gluing only when the gap says so. */
+function joinLine(words: OcrWord[], em: number): { text: string; owners: number[] } {
+  const sorted = [...words].sort((a, b) => a.bbox.x0 - b.bbox.x0);
+  let text = "";
+  const owners: number[] = [];
+  sorted.forEach((w, i) => {
+    if (i > 0) {
+      const prev = sorted[i - 1]!;
+      const glue = shouldGlueTokens(prev.text, w.text, w.bbox.x0 - prev.bbox.x1, em);
+      if (!glue) {
+        text += " ";
+        owners.push(-1);
+      }
+    }
+    const owner = words.indexOf(w);
+    for (let k = 0; k < w.text.length; k++) owners.push(owner);
+    text += w.text;
+  });
+  return { text, owners };
+}
+
+const THOUSANDS_COMMA = /\d,\d{3}(?!\d)/g;
+
+function countDelims(text: string, delim: string): number {
+  let n = 0;
+  let quoted = false;
+  for (const ch of text) {
+    if (ch === '"') quoted = !quoted;
+    else if (ch === delim && !quoted) n++;
+  }
+  return n;
+}
+
+function splitDelimited(text: string, delim: string): Array<{ start: number; end: number; value: string }> {
+  const fields: Array<{ start: number; end: number; value: string }> = [];
+  let quoted = false;
+  let start = 0;
+  let value = "";
+  for (let i = 0; i <= text.length; i++) {
+    const ch = text[i];
+    if (i === text.length || (ch === delim && !quoted)) {
+      fields.push({ start, end: i, value: value.trim() });
+      start = i + 1;
+      value = "";
+      continue;
+    }
+    if (ch === '"') {
+      if (quoted && text[i + 1] === '"') {
+        value += '"';
+        i++;
+      } else {
+        quoted = !quoted;
+      }
+      continue;
+    }
+    value += ch;
+  }
+  return fields;
+}
+
+/**
+ * CSV-looking text (every line carries the same number of commas or semicolons):
+ * split on the delimiter, not on visual gaps. Visual splitting cuts "a, b, c" in
+ * random places because the spaces after commas are all roughly the same width.
+ */
+function csvGrid(rows: OcrWord[][], visualCounts: number[], em: number): AccCell[][] | null {
+  if (rows.length < 2) return null;
+  const lines = rows.map((row) => joinLine(row, em));
+  for (const delim of [",", ";"]) {
+    const counts = lines.map((l) => countDelims(l.text, delim));
+    const freq = new Map<number, number>();
+    for (const n of counts) if (n > 0) freq.set(n, (freq.get(n) ?? 0) + 1);
+    let k = 0;
+    let kFreq = 0;
+    for (const [n, f] of freq) if (f > kFreq || (f === kFreq && n > k)) [k, kFreq] = [n, f];
+    if (k < 1 || kFreq < Math.max(2, Math.ceil(rows.length * 0.7))) continue;
+    // Commas that are all thousands separators mean a numeric column, not CSV.
+    if (delim === ",") {
+      const allThousands = lines.every(
+        (l) => countDelims(l.text, ",") === (l.text.match(THOUSANDS_COMMA)?.length ?? 0),
+      );
+      if (allThousands) continue;
+    }
+    // If the visual gaps already give at least as many columns, trust them.
+    const visual = median(visualCounts);
+    if (visual >= k + 1) continue;
+
+    return lines.map((line, r) => {
+      const row = rows[r]!;
+      return splitDelimited(line.text, delim).map((field) => {
+        const owners = new Set(line.owners.slice(field.start, field.end).filter((o) => o >= 0));
+        const words = [...owners].map((o) => row[o]!);
+        return {
+          text: field.value,
+          confidence: words.length ? Math.min(...words.map((w) => w.confidence)) : 100,
+          bbox: words.reduce<BBox | null>((box, w) => unionBBox(box, w.bbox), null),
+        };
+      });
+    });
+  }
+  return null;
+}
+
+function padRows(grid: AccCell[][]): AccCell[][] {
+  const n = Math.max(1, ...grid.map((row) => row.length));
+  return grid.map((row) => [...row, ...Array.from({ length: n - row.length }, () => emptyAcc())]);
+}
+
+/** Separators strictly inside the text extent, sorted. */
+function innerSeparators(seps: number[] | undefined, lo: number, hi: number): number[] {
+  return (seps ?? []).filter((s) => s > lo && s < hi).sort((a, b) => a - b);
+}
+
+function slotOf(value: number, seps: number[]): number {
+  let i = 0;
+  while (i < seps.length && value >= seps[i]!) i++;
+  return i;
+}
+
+/**
+ * The image had real gridlines: use them as cell walls. Columns come from vertical
+ * rules (so a right-aligned id next to left-aligned text no longer glues into one
+ * cell); rows come from horizontal rules, so a wrapped multi-line cell stays in its
+ * row instead of spawning a near-empty extra row.
+ */
+function ruledGrid(rows: OcrWord[][], colSeps: number[], rowSeps: number[], em: number): AccCell[][] {
+  const nCols = colSeps.length + 1;
+  type Line = { y: number; cells: OcrWord[][] };
+  const lines: Line[] = rows.map((row) => {
+    const cells: OcrWord[][] = Array.from({ length: nCols }, () => []);
+    for (const w of row) cells[slotOf(xCenter(w), colSeps)]!.push(w);
+    return { y: mean(row.map(yCenter)), cells };
+  });
+
+  // Group visual lines by the horizontal band they sit in.
+  const bands: Line[][] = [];
+  let lastBand = -1;
+  for (const line of lines) {
+    const band = rowSeps.length >= 2 ? slotOf(line.y, rowSeps) : -1;
+    if (band >= 0 && band === lastBand) bands[bands.length - 1]!.push(line);
+    else bands.push([line]);
+    lastBand = band;
+  }
+
+  const out: AccCell[][] = [];
+  for (const band of bands) {
+    // Two or more lines that each fill most columns are separate rows whose rule
+    // we missed; keep them apart. Otherwise it's wrapped text: merge.
+    const filled = band.map((l) => l.cells.filter((c) => c.length).length);
+    const usedCols = new Set(band.flatMap((l) => l.cells.map((c, i) => (c.length ? i : -1)).filter((i) => i >= 0)));
+    const full = filled.filter((n) => n >= Math.max(2, usedCols.size * 0.6)).length;
+    const groups = full >= 2 ? band.map((l) => [l]) : [band];
+    for (const group of groups) {
+      const fullest = Math.max(...group.map((l) => l.cells.filter((c) => c.length).length));
+      out.push(
+        Array.from({ length: nCols }, (_, c) => {
+          const acc = emptyAcc();
+          for (const line of group) {
+            let words = line.cells[c]!;
+            // Stray 1-char specks on a wrap line (cell-corner markers) are noise.
+            if (group.length > 1 && line.cells.filter((x) => x.length).length < fullest) {
+              words = words.filter((w) => w.text.length > 1 || w.confidence >= 80);
+            }
+            if (!words.length) continue;
+            const { text } = joinLine(words, em);
+            acc.text = acc.text ? `${acc.text} ${text}` : text;
+            acc.confidence = Math.min(acc.confidence, ...words.map((w) => w.confidence));
+            for (const w of words) acc.bbox = unionBBox(acc.bbox, w.bbox);
+          }
+          return acc;
+        }),
+      );
+    }
+  }
+  return out;
+}
+
+export function reconstructGrid(words: OcrWord[], options: ReconstructOptions = {}): GridResult {
   const cleaned = words
     .map((w) => ({
       ...w,
@@ -252,9 +440,21 @@ export function reconstructGrid(words: OcrWord[]): GridResult {
   const em = median(cleaned.map(height));
   const charW = typicalCharWidth(cleaned);
   const rowThreshold = Math.max(em * 0.62, 12);
-  const rows = clusterRows(cleaned, rowThreshold).map((row) => mergeRowWords(row, em, charW));
-  const anchors = columnAnchors(rows, em);
-  const raw = assignColumns(rows, anchors);
+  const lineWords = clusterRows(cleaned, rowThreshold);
+  const rows = lineWords.map((row) => mergeRowWords(row, em, charW));
+
+  const minX = Math.min(...cleaned.map((w) => w.bbox.x0));
+  const maxX = Math.max(...cleaned.map((w) => w.bbox.x1));
+  const minY = Math.min(...cleaned.map((w) => w.bbox.y0));
+  const maxY = Math.max(...cleaned.map((w) => w.bbox.y1));
+  const colSeps = innerSeparators(options.rules?.cols, minX, maxX);
+  const rowSeps = innerSeparators(options.rules?.rows, minY, maxY);
+
+  const csv = csvGrid(lineWords, rows.map((r) => r.length), em);
+  let raw: AccCell[][];
+  if (csv) raw = padRows(csv);
+  else if (colSeps.length > 0) raw = ruledGrid(lineWords, colSeps, rowSeps, em);
+  else raw = assignColumns(rows, columnAnchors(rows, em));
   const acc = dropEmptyEdges(raw);
   const { cells, meta } =
     acc.length === 0
