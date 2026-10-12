@@ -111,7 +111,7 @@ export async function extractGridFromImage(
   );
   const words = collectWords(data);
   onProgress({ phase: "Building the grid…", progress: 0.96 });
-  const grid = reconstructGrid(words);
+  const grid = reconstructGrid(words, { rules: prepared.rules });
 
   return {
     ...grid,

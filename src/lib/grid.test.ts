@@ -143,3 +143,64 @@ test("sparse tables get a warning instead of failing", () => {
   assert.equal(result.sparse, true);
   assert.ok(result.warning);
 });
+
+test("splits CSV-looking text on commas instead of visual gaps", () => {
+  // "id, name, city" with single spaces: visually it is one run of text.
+  const lines = [
+    ["id,", "name,", "city"],
+    ["1,", "Asha", "Rao,", "Pune"],
+    ["2,", "Ben,", "Leeds"],
+  ];
+  const words: OcrWord[] = [];
+  lines.forEach((parts, r) => {
+    let x = 10;
+    for (const p of parts) {
+      words.push(word(p, x, 10 + r * 30, x + p.length * 10, 30 + r * 30));
+      x += p.length * 10 + 8;
+    }
+  });
+  const result = reconstructGrid(words);
+  assert.deepEqual(result.cells, [
+    ["id", "name", "city"],
+    ["1", "Asha Rao", "Pune"],
+    ["2", "Ben", "Leeds"],
+  ]);
+});
+
+test("does not treat thousands separators as CSV", () => {
+  const words: OcrWord[] = [
+    word("Item", 10, 10, 60, 30),
+    word("Amount", 300, 10, 380, 30),
+    word("Rice", 10, 50, 60, 70),
+    word("15,000", 300, 50, 370, 70),
+    word("Dal", 10, 90, 50, 110),
+    word("7,560", 300, 90, 360, 110),
+  ];
+  const result = reconstructGrid(words);
+  assert.deepEqual(result.cells, [
+    ["Item", "Amount"],
+    ["Rice", "15,000"],
+    ["Dal", "7,560"],
+  ]);
+});
+
+test("uses gridlines as cell walls: split tight columns, keep wrapped cells in their row", () => {
+  // Right-aligned id right next to left-aligned text, then a two-line wrapped cell.
+  const words: OcrWord[] = [
+    word("id", 60, 8, 80, 28),
+    word("station", 100, 8, 170, 28),
+    word("4050430", 10, 48, 88, 68),
+    word("6th/West", 96, 48, 180, 68),
+    word("Pfluger", 96, 86, 160, 106),
+    word("Bridge", 166, 86, 220, 106),
+    word("13857913", 4, 118, 88, 138),
+    word("Street", 96, 118, 150, 138),
+  ];
+  const rules = { rows: [2, 38, 78, 146], cols: [0, 92, 240] };
+  const result = reconstructGrid(words, { rules });
+  assert.deepEqual(result.cells, [
+    ["id", "station"],
+    ["4050430", "6th/West"],
+    ["13857913", "Pfluger Bridge Street"],
+  ]);
+});
