@@ -204,3 +204,55 @@ test("uses gridlines as cell walls: split tight columns, keep wrapped cells in t
     ["13857913", "Pfluger Bridge Street"],
   ]);
 });
+
+test("keeps lone em-dash placeholder cells instead of treating them as rules", () => {
+  // Word boxes from a SemTab (MammoTab) table: "—" marks empty stats.
+  const words: OcrWord[] = [];
+  for (const [i, y] of [31, 79].entries()) {
+    words.push(word(i ? "Luján" : "Comunicaciones", 31, y, 215, y + 19));
+    words.push(word("1", 717, y + 1, 722, y + 19));
+    words.push(word("—", 873, y + 10, 894, y + 12));
+    words.push(word("—", 960, y + 10, 981, y + 12));
+    words.push(word("0", 1060, y + 1, 1072, y + 19));
+  }
+  const grid = reconstructGrid(words);
+  assert.deepEqual(grid.cells[0], ["Comunicaciones", "1", "—", "—", "0"]);
+  assert.equal(grid.cells[1]?.length, 5);
+});
+
+test("does not glue numbers from neighbouring columns", () => {
+  // "2732 | 16.9" sat ~40px apart and came out as "273216.9".
+  const words: OcrWord[] = [
+    word("Estonians", 42, 35, 166, 56),
+    word("8856", 444, 35, 509, 56),
+    word("88.9", 554, 35, 610, 56),
+    word("12667", 653, 35, 730, 56),
+    word("Russians", 42, 89, 160, 110),
+    word("746", 450, 89, 500, 110),
+    word("7.49", 554, 89, 610, 110),
+    word("2732", 663, 89, 722, 110),
+  ];
+  const grid = reconstructGrid(words);
+  assert.deepEqual(grid.cells, [
+    ["Estonians", "8856", "88.9", "12667"],
+    ["Russians", "746", "7.49", "2732"],
+  ]);
+});
+
+test("keeps the space after a comma in dates and lists", () => {
+  assert.equal(shouldGlueTokens("28,", "2009", 8, 21), false);
+  assert.equal(shouldGlueTokens("1st(1991,", "1993,", 8, 21), false);
+  assert.equal(shouldGlueTokens("1,", "00,000", 1, 21), true);
+});
+
+test("keeps low-confidence words that look like text", () => {
+  const words: OcrWord[] = [
+    word("22", 10, 10, 40, 32),
+    word("('Path", 200, 10, 262, 32),
+    word("Traversal')", 270, 10, 383, 32, 13),
+    word("59", 10, 50, 40, 72),
+    word("Draft", 200, 50, 260, 72),
+  ];
+  const grid = reconstructGrid(words);
+  assert.equal(grid.cells[0]?.[1], "('Path Traversal')");
+});

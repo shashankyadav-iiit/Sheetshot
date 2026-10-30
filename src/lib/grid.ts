@@ -69,11 +69,13 @@ function width(w: OcrWord): number {
   return Math.max(1, w.bbox.x1 - w.bbox.x0);
 }
 
-function isRuleToken(w: OcrWord): boolean {
+function isRuleToken(w: OcrWord, em: number): boolean {
   const t = w.text.trim();
   if (!t) return true;
   if (/^[|Iil!]+$/.test(t) && width(w) < height(w) * 0.5) return true;
-  if (/^[-_=─—]+$/.test(t) && width(w) > height(w) * 3) return true;
+  // A lone dash/em-dash is a common "no value" placeholder; only treat dash runs
+  // as table rules when they are much wider than a glyph.
+  if (/^[-_=─—–]+$/.test(t) && width(w) > Math.max(height(w) * 3, em * 2.5)) return true;
   return false;
 }
 
@@ -128,7 +130,7 @@ function mergeRowWords(row: OcrWord[], em: number, charW: number): OcrWord[] {
     const gap = word.bbox.x0 - prev.bbox.x1;
     const glue = shouldGlueTokens(prev.text, word.text, gap, em);
     const numericGlue =
-      looksNumericToken(prev.text) && looksNumericToken(word.text) && gap <= Math.max(em * 1.4, charW * 3);
+      looksNumericToken(prev.text) && looksNumericToken(word.text) && gap <= Math.max(em * 0.5, charW * 0.8);
     const sameCell = gap <= cellGap || glue || numericGlue;
 
     if (sameCell) {
@@ -416,13 +418,19 @@ function ruledGrid(rows: OcrWord[][], colSeps: number[], rowSeps: number[], em: 
 }
 
 export function reconstructGrid(words: OcrWord[], options: ReconstructOptions = {}): GridResult {
-  const cleaned = words
+  const normalized = words
     .map((w) => ({
       ...w,
       text: w.text.replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim(),
       confidence: Number.isFinite(w.confidence) ? w.confidence : 0,
     }))
-    .filter((w) => w.text.length > 0 && w.confidence >= 20 && !isRuleToken(w));
+    .filter((w) => w.text.length > 0);
+  const em0 = median(normalized.map(height)) || 12;
+  // Keep low-confidence words that look like real text (they get flagged for review)
+  // instead of silently dropping them; still drop low-confidence specks.
+  const cleaned = normalized.filter(
+    (w) => (w.confidence >= 20 || /[A-Za-z0-9]{3,}/.test(w.text)) && !isRuleToken(w, em0),
+  );
 
   if (cleaned.length === 0) {
     return {

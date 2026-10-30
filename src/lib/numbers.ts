@@ -19,10 +19,12 @@ export function shouldGlueTokens(
   const b = right.trim();
   if (!a || !b) return false;
 
-  if (/[,$]$/.test(a) || /^[,.]/.test(b)) return true;
+  if (/^[,.]/.test(b) || /\$$/.test(a)) return true;
+  // "1," + "00,000" (split digit grouping) glues; "28," + "2009" or "1991," + "1993" keeps its space.
+  if (/,$/.test(a)) return /^[\d,]*\d,$/.test(a) && /^\d{2,3}(,|$)/.test(b) && gapPx <= emPx * 0.35;
 
   const close = gapPx <= Math.max(3, emPx * 0.55);
-  if (looksNumericToken(a) && looksNumericToken(b) && gapPx <= emPx * 1.05) {
+  if (looksNumericToken(a) && looksNumericToken(b) && gapPx <= emPx * 0.35) {
     return true;
   }
 
